@@ -1,0 +1,661 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>vLLM Metrics Proxy</title>
+<style>
+:root {
+  --bg-primary: #0d1117;
+  --bg-secondary: #161b22;
+  --bg-tertiary: #21262d;
+  --border: #30363d;
+  --text-primary: #e6edf3;
+  --text-secondary: #8b949e;
+  --text-muted: #6e7681;
+  --accent: #58a6ff;
+  --accent-dim: #1f6feb;
+  --green: #3fb950;
+  --red: #f85149;
+  --yellow: #d29922;
+  --card-radius: 8px;
+  --font-mono: 'SF Mono', 'Cascadia Code', 'Fira Code', Consolas, monospace;
+  --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.5;
+  min-height: 100vh;
+}
+
+.container {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 20px 24px 40px;
+}
+
+/* Header */
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 24px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.header h1 {
+  font-size: 20px;
+  font-weight: 600;
+  color: var(--text-primary);
+  letter-spacing: -0.3px;
+}
+
+.header-controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.header-controls label {
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+.time-select {
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  color: var(--text-primary);
+  padding: 6px 12px;
+  border-radius: 6px;
+  font-size: 13px;
+  font-family: var(--font-sans);
+  cursor: pointer;
+  outline: none;
+}
+
+.time-select:hover {
+  border-color: var(--accent-dim);
+}
+
+.time-select:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(31, 111, 235, 0.3);
+}
+
+/* Summary Cards */
+.summary-grid {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 16px;
+  margin-bottom: 24px;
+}
+
+.summary-card {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--card-radius);
+  padding: 16px 18px;
+  transition: border-color 0.2s;
+}
+
+.summary-card:hover {
+  border-color: var(--accent-dim);
+}
+
+.summary-card .label {
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 6px;
+}
+
+.summary-card .value {
+  font-size: 24px;
+  font-weight: 700;
+  font-family: var(--font-mono);
+  color: var(--text-primary);
+}
+
+.summary-card .value.loading {
+  color: var(--text-muted);
+  font-size: 16px;
+  font-weight: 400;
+}
+
+/* Section */
+.section {
+  margin-bottom: 24px;
+}
+
+.section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.section-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.section-badge {
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  padding: 2px 8px;
+  border-radius: 12px;
+  font-size: 12px;
+  font-family: var(--font-mono);
+}
+
+/* Model Breakdown Table */
+.model-table-wrapper {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--card-radius);
+  overflow: hidden;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+table th {
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 10px 16px;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+}
+
+table td {
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 13px;
+}
+
+table tr:last-child td {
+  border-bottom: none;
+}
+
+table tr:hover td {
+  background: rgba(88, 166, 255, 0.04);
+}
+
+.model-name {
+  font-family: var(--font-mono);
+  font-weight: 600;
+  color: var(--accent);
+}
+
+/* Request Log Table */
+.requests-table-wrapper {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--card-radius);
+  overflow: hidden;
+}
+
+.requests-table-wrapper table td.time-col {
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.status-ok {
+  color: var(--green);
+  font-weight: 600;
+}
+
+.status-err {
+  color: var(--red);
+  font-weight: 600;
+  cursor: help;
+}
+
+.na {
+  color: var(--text-muted);
+}
+
+/* Load More */
+.load-more-bar {
+  display: flex;
+  justify-content: center;
+  padding: 12px;
+}
+
+.load-more-btn {
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  padding: 8px 24px;
+  border-radius: 6px;
+  font-size: 13px;
+  font-family: var(--font-sans);
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.load-more-btn:hover {
+  background: var(--accent-dim);
+  color: var(--text-primary);
+  border-color: var(--accent);
+}
+
+.load-more-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* Empty / Error States */
+.empty-state {
+  text-align: center;
+  padding: 40px 20px;
+  color: var(--text-muted);
+  font-size: 14px;
+}
+
+.error-state {
+  text-align: center;
+  padding: 20px;
+  color: var(--red);
+  font-size: 13px;
+}
+
+/* Connection indicator */
+.connection-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-right: 6px;
+  vertical-align: middle;
+  background: var(--green);
+}
+
+.connection-dot.error {
+  background: var(--red);
+}
+
+.connection-dot.loading {
+  background: var(--yellow);
+}
+
+/* Responsive */
+@media (max-width: 900px) {
+  .summary-grid {
+    grid-template-columns: repeat(3, 1fr);
+  }
+}
+
+@media (max-width: 600px) {
+  .summary-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+  .header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 12px;
+  }
+}
+</style>
+</head>
+<body>
+<div class="container">
+  <!-- Header -->
+  <div class="header">
+    <h1><span class="connection-dot loading" id="connDot"></span>vLLM Metrics Proxy</h1>
+    <div class="header-controls">
+      <label for="timeRange">时间范围:</label>
+      <select class="time-select" id="timeRange">
+        <option value="1h" selected>1h</option>
+        <option value="6h">6h</option>
+        <option value="24h">24h</option>
+        <option value="7d">7d</option>
+        <option value="all">all</option>
+      </select>
+    </div>
+  </div>
+
+  <!-- Summary Cards -->
+  <div class="summary-grid">
+    <div class="summary-card">
+      <div class="label">总请求数</div>
+      <div class="value" id="totalReqs">--</div>
+    </div>
+    <div class="summary-card">
+      <div class="label">平均 TTFT</div>
+      <div class="value" id="avgTtft">--</div>
+    </div>
+    <div class="summary-card">
+      <div class="label">平均 TPS</div>
+      <div class="value" id="avgTps">--</div>
+    </div>
+    <div class="summary-card">
+      <div class="label">缓存命中率</div>
+      <div class="value" id="avgCache">--</div>
+    </div>
+    <div class="summary-card">
+      <div class="label">总 Tokens</div>
+      <div class="value" id="totalTokens">--</div>
+    </div>
+  </div>
+
+  <!-- Model Breakdown -->
+  <div class="section">
+    <div class="section-header">
+      <span class="section-title">按 Model 分组</span>
+    </div>
+    <div class="model-table-wrapper">
+      <table>
+        <thead>
+          <tr>
+            <th>Model</th>
+            <th>请求数</th>
+            <th>平均 TTFT</th>
+            <th>平均 TPS</th>
+            <th>缓存命中率</th>
+          </tr>
+        </thead>
+        <tbody id="modelTbody">
+          <tr><td colspan="5" class="empty-state">加载中...</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Request Log -->
+  <div class="section">
+    <div class="section-header">
+      <span class="section-title">请求日志</span>
+      <span class="section-badge" id="reqCount">0 条</span>
+    </div>
+    <div class="requests-table-wrapper">
+      <table>
+        <thead>
+          <tr>
+            <th>时间</th>
+            <th>Model</th>
+            <th>TTFT</th>
+            <th>TPS</th>
+            <th>缓存</th>
+            <th>状态</th>
+          </tr>
+        </thead>
+        <tbody id="reqTbody">
+          <tr><td colspan="6" class="empty-state">加载中...</td></tr>
+        </tbody>
+      </table>
+      <div class="load-more-bar" id="loadMoreBar" style="display:none;">
+        <button class="load-more-btn" id="loadMoreBtn" onclick="loadMore()">加载更多</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+(function() {
+  'use strict';
+
+  // State
+  var currentSince = '1h';
+  var reqOffset = 0;
+  var reqLimit = 50;
+  var reqTotal = 0;
+  var pollTimer = null;
+
+  // DOM refs
+  var connDot = document.getElementById('connDot');
+  var timeRangeSel = document.getElementById('timeRange');
+  var totalReqsEl = document.getElementById('totalReqs');
+  var avgTtftEl = document.getElementById('avgTtft');
+  var avgTpsEl = document.getElementById('avgTps');
+  var avgCacheEl = document.getElementById('avgCache');
+  var totalTokensEl = document.getElementById('totalTokens');
+  var modelTbody = document.getElementById('modelTbody');
+  var reqTbody = document.getElementById('reqTbody');
+  var reqCountEl = document.getElementById('reqCount');
+  var loadMoreBar = document.getElementById('loadMoreBar');
+  var loadMoreBtn = document.getElementById('loadMoreBtn');
+
+  // --- Formatting helpers ---
+
+  function formatTokens(n) {
+    if (n == null) return '--';
+    if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M';
+    if (n >= 1000) return (n / 1000).toFixed(1) + 'K';
+    return String(n);
+  }
+
+  function formatPercent(n) {
+    if (n == null) return '--';
+    return (n * 100).toFixed(1) + '%';
+  }
+
+  function formatMs(n) {
+    if (n == null) return '--';
+    return Math.round(n) + ' ms';
+  }
+
+  function formatTps(n) {
+    if (n == null) return '--';
+    return n.toFixed(1) + ' tok/s';
+  }
+
+  function formatTime(isoStr) {
+    if (!isoStr) return '--';
+    var d = new Date(isoStr);
+    var hh = String(d.getHours()).padStart(2, '0');
+    var mm = String(d.getMinutes()).padStart(2, '0');
+    var ss = String(d.getSeconds()).padStart(2, '0');
+    return hh + ':' + mm + ':' + ss;
+  }
+
+  function truncateModel(name, maxLen) {
+    if (!name) return '--';
+    if (name.length <= maxLen) return name;
+    return name.substring(0, maxLen) + '...';
+  }
+
+  // --- Connection indicator ---
+
+  function setConnStatus(status) {
+    connDot.className = 'connection-dot ' + status;
+  }
+
+  // --- Fetch helpers ---
+
+  async function fetchJSON(url) {
+    var resp = await fetch(url);
+    if (!resp.ok) {
+      throw new Error('HTTP ' + resp.status);
+    }
+    return resp.json();
+  }
+
+  // --- Summary cards ---
+
+  function renderSummary(data) {
+    totalReqsEl.textContent = data.total_requests != null ? data.total_requests.toLocaleString() : '--';
+    avgTtftEl.textContent = formatMs(data.avg_ttft_ms);
+    avgTpsEl.textContent = formatTps(data.avg_tps);
+    avgCacheEl.textContent = formatPercent(data.avg_cache_ratio);
+
+    var totalTokens = (data.total_prompt_tokens || 0) + (data.total_completion_tokens || 0);
+    totalTokensEl.textContent = formatTokens(totalTokens);
+  }
+
+  // --- Model breakdown ---
+
+  function renderModelBreakdown(byModel) {
+    if (!byModel || byModel.length === 0) {
+      modelTbody.innerHTML = '<tr><td colspan="5" class="empty-state">暂无数据</td></tr>';
+      return;
+    }
+    var html = '';
+    for (var i = 0; i < byModel.length; i++) {
+      var m = byModel[i];
+      html += '<tr>'
+        + '<td class="model-name" title="' + escapeHtml(m.model) + '">' + escapeHtml(m.model) + '</td>'
+        + '<td>' + (m.count != null ? m.count : '--') + '</td>'
+        + '<td>' + formatMs(m.avg_ttft_ms) + '</td>'
+        + '<td>' + formatTps(m.avg_tps) + '</td>'
+        + '<td>' + formatPercent(m.avg_cache_ratio) + '</td>'
+        + '</tr>';
+    }
+    modelTbody.innerHTML = html;
+  }
+
+  // --- Request log ---
+
+  function renderRequests(requests, append) {
+    if (!append) {
+      reqTbody.innerHTML = '';
+    }
+
+    if (!requests || requests.length === 0 && !append) {
+      reqTbody.innerHTML = '<tr><td colspan="6" class="empty-state">暂无数据</td></tr>';
+      return;
+    }
+
+    var html = '';
+    for (var i = 0; i < requests.length; i++) {
+      var r = requests[i];
+      var isStreaming = r.stream === true || r.stream === 1;
+      var isError = r.status !== 'success';
+      var ttft = isStreaming ? formatMs(r.ttft_ms) : '<span class="na">--</span>';
+      var tps = isStreaming ? formatTps(r.completion_speed) : '<span class="na">--</span>';
+      var cache = formatPercent(r.cached_ratio);
+
+      var statusHtml;
+      if (isError) {
+        var errTitle = r.error_message ? escapeHtml(r.error_message) : 'Error';
+        statusHtml = '<span class="status-err" title="' + errTitle + '">&#x2717; ' + escapeHtml(String(r.status).substring(0, 20)) + '</span>';
+      } else {
+        statusHtml = '<span class="status-ok">&#x2713;</span>';
+      }
+
+      html += '<tr>'
+        + '<td class="time-col">' + formatTime(r.created_at) + '</td>'
+        + '<td class="model-name" title="' + escapeHtml(r.model) + '">' + escapeHtml(truncateModel(r.model, 16)) + '</td>'
+        + '<td>' + ttft + '</td>'
+        + '<td>' + tps + '</td>'
+        + '<td>' + cache + '</td>'
+        + '<td>' + statusHtml + '</td>'
+        + '</tr>';
+    }
+
+    if (append) {
+      reqTbody.insertAdjacentHTML('beforeend', html);
+    } else {
+      reqTbody.innerHTML = html;
+    }
+
+    updateLoadMoreButton();
+  }
+
+  function updateLoadMoreButton() {
+    if (reqOffset + reqLimit >= reqTotal) {
+      loadMoreBar.style.display = 'none';
+    } else {
+      loadMoreBar.style.display = 'flex';
+      loadMoreBtn.disabled = false;
+      loadMoreBtn.textContent = '加载更多 (剩余 ' + (reqTotal - reqOffset - reqLimit) + ')';
+    }
+    reqCountEl.textContent = Math.min(reqOffset + reqLimit, reqTotal) + ' / ' + reqTotal + ' 条';
+  }
+
+  // --- Load more (exposed globally for onclick) ---
+
+  window.loadMore = async function() {
+    loadMoreBtn.disabled = true;
+    loadMoreBtn.textContent = '加载中...';
+    try {
+      var data = await fetchJSON('/api/requests?since=' + encodeURIComponent(currentSince) + '&limit=' + reqLimit + '&offset=' + (reqOffset + reqLimit));
+      reqOffset = data.offset;
+      reqTotal = data.total;
+      renderRequests(data.requests, true);
+    } catch (e) {
+      console.error('Failed to load more:', e);
+      loadMoreBtn.disabled = false;
+      loadMoreBtn.textContent = '加载失败，重试';
+    }
+  };
+
+  // --- Escape HTML ---
+
+  function escapeHtml(str) {
+    if (str == null) return '';
+    return String(str)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+  // --- Main refresh ---
+
+  async function refresh() {
+    try {
+      setConnStatus('loading');
+
+      var summaryData = await fetchJSON('/api/summary?since=' + encodeURIComponent(currentSince));
+      renderSummary(summaryData);
+      renderModelBreakdown(summaryData.by_model);
+
+      // Fetch initial request page
+      var reqData = await fetchJSON('/api/requests?since=' + encodeURIComponent(currentSince) + '&limit=' + reqLimit + '&offset=0');
+      reqOffset = reqData.offset;
+      reqTotal = reqData.total;
+      renderRequests(reqData.requests, false);
+
+      setConnStatus('');
+    } catch (e) {
+      console.error('Refresh failed:', e);
+      setConnStatus('error');
+    }
+  }
+
+  // --- Auto-refresh (poll every 5s) ---
+
+  function startPolling() {
+    if (pollTimer) clearInterval(pollTimer);
+    pollTimer = setInterval(refresh, 5000);
+  }
+
+  // --- Event listeners ---
+
+  timeRangeSel.addEventListener('change', function() {
+    currentSince = this.value;
+    refresh();
+  });
+
+  // --- Init ---
+
+  refresh();
+  startPolling();
+})();
+</script>
+</body>
+</html>
