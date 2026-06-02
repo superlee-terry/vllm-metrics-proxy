@@ -99,3 +99,65 @@ async def test_upstream_unreachable_returns_502(app):
             )
 
     assert resp.status_code == 502
+
+
+@pytest.mark.asyncio
+async def test_streaming_proxy_records_metrics(app, tmp_path):
+    """Streaming request captures TTFT and streams chunks to client."""
+    import asyncio
+
+    chunks = [
+        '{"choices":[{"delta":{"role":"assistant"}}],"usage":null}',
+        '{"choices":[{"delta":{"content":"Hello"}}],"usage":null}',
+        '{"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":2,"total_tokens":12}}',
+    ]
+
+    with patch("vllm_metrics_proxy.proxy.httpx.AsyncClient") as MockClient:
+        mock_instance = AsyncMock()
+
+        # Build an async generator that yields SSE lines then exits
+        async def fake_aiter_lines():
+            lines = [f"data: {c}" for c in chunks]
+            lines.append("[DONE]")
+            for line in lines:
+                yield line
+
+        mock_resp = AsyncMock()
+        mock_resp.status_code = 200
+        mock_resp.headers = {"content-type": "text/event-stream"}
+        mock_resp.aiter_lines = fake_aiter_lines
+        mock_resp.aread = AsyncMock(return_value=b"")
+
+        # client.stream() returns a context manager whose __aenter__ gives mock_resp
+        mock_stream_ctx = AsyncMock()
+        mock_stream_ctx.__aenter__.return_value = mock_resp
+        mock_stream_ctx.__aexit__.return_value = False
+        mock_instance.stream = MagicMock(return_value=mock_stream_ctx)
+
+        mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
+        mock_instance.__aexit__ = AsyncMock(return_value=False)
+        MockClient.return_value = mock_instance
+
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.post(
+                "/v1/chat/completions",
+                json={
+                    "model": "qwen3.6-27b",
+                    "messages": [{"role": "user", "content": "Hi"}],
+                    "stream": True,
+                },
+            )
+
+    assert resp.status_code == 200
+
+    # Give the background stream_generator coroutine time to finish
+    await asyncio.sleep(0.2)
+
+    from vllm_metrics_proxy.db import get_requests
+
+    rows = await get_requests(str(tmp_path / "test.db"))
+    assert len(rows) == 1
+    assert rows[0]["stream"] == 1
+    assert rows[0]["ttft_ms"] is not None
+    assert rows[0]["completion_tokens"] == 2
