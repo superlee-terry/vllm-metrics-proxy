@@ -14,6 +14,8 @@ def compute_metrics(
     reasoning_tokens: int | None,
     latency_ms: float,
     ttft_ms: float | None,
+    spec_draft_tokens: int | None = None,
+    spec_accepted_tokens: int | None = None,
 ) -> dict:
     """Compute derived metrics from raw usage data."""
     cached_ratio = None
@@ -25,10 +27,18 @@ def compute_metrics(
         prompt_speed = prompt_tokens / (ttft_ms / 1000.0)
 
     completion_speed = None
-    if stream and ttft_ms and latency_ms and completion_tokens:
+    if ttft_ms and latency_ms and completion_tokens:
         generate_time = (latency_ms - ttft_ms) / 1000.0
         if generate_time > 0:
             completion_speed = completion_tokens / generate_time
+        elif latency_ms > 0:
+            # Non-streaming: total latency is the whole generation time
+            completion_speed = completion_tokens / (latency_ms / 1000.0)
+
+    total_tps = None
+    if latency_ms > 0 and (prompt_tokens or completion_tokens):
+        total_tokens = (prompt_tokens or 0) + (completion_tokens or 0)
+        total_tps = total_tokens / (latency_ms / 1000.0)
 
     return {
         "id": request_id,
@@ -42,7 +52,10 @@ def compute_metrics(
         "ttft_ms": ttft_ms,
         "prompt_speed": round(prompt_speed, 1) if prompt_speed else None,
         "completion_speed": round(completion_speed, 1) if completion_speed else None,
+        "total_tps": round(total_tps, 1) if total_tps else None,
         "cached_ratio": round(cached_ratio, 3) if cached_ratio is not None else None,
+        "spec_draft_tokens": spec_draft_tokens,
+        "spec_accepted_tokens": spec_accepted_tokens,
         "status": "success",
         "error_message": None,
     }

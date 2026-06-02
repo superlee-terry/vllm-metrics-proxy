@@ -5,7 +5,7 @@ import aiosqlite
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS requests (
     id              TEXT PRIMARY KEY,
-    created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    created_at      TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
     model           TEXT,
     stream          INTEGER NOT NULL DEFAULT 0,
     prompt_tokens   INTEGER,
@@ -16,7 +16,10 @@ CREATE TABLE IF NOT EXISTS requests (
     ttft_ms         REAL,
     prompt_speed    REAL,
     completion_speed REAL,
+    total_tps       REAL,
     cached_ratio    REAL,
+    spec_draft_tokens   INTEGER,
+    spec_accepted_tokens INTEGER,
     status          TEXT NOT NULL DEFAULT 'success',
     error_message   TEXT
 );
@@ -30,11 +33,15 @@ INSERT_SQL = """
 INSERT INTO requests (
     id, model, stream, prompt_tokens, completion_tokens,
     cached_tokens, reasoning_tokens, latency_ms, ttft_ms,
-    prompt_speed, completion_speed, cached_ratio, status, error_message
+    prompt_speed, completion_speed, total_tps, cached_ratio,
+    spec_draft_tokens, spec_accepted_tokens,
+    status, error_message
 ) VALUES (
     :id, :model, :stream, :prompt_tokens, :completion_tokens,
     :cached_tokens, :reasoning_tokens, :latency_ms, :ttft_ms,
-    :prompt_speed, :completion_speed, :cached_ratio, :status, :error_message
+    :prompt_speed, :completion_speed, :total_tps, :cached_ratio,
+    :spec_draft_tokens, :spec_accepted_tokens,
+    :status, :error_message
 )
 """
 
@@ -99,7 +106,8 @@ async def get_summary(
     SELECT
         COUNT(*) as total_requests,
         AVG(ttft_ms) as avg_ttft_ms,
-        AVG(completion_speed) as avg_tps,
+        AVG(prompt_speed) as avg_prefill_tps,
+        AVG(completion_speed) as avg_decode_tps,
         AVG(cached_ratio) as avg_cache_ratio,
         SUM(prompt_tokens) as total_prompt_tokens,
         SUM(completion_tokens) as total_completion_tokens
@@ -118,10 +126,11 @@ async def get_summary(
             return {
                 "total_requests": row[0] or 0,
                 "avg_ttft_ms": round(row[1], 1) if row[1] else None,
-                "avg_tps": round(row[2], 1) if row[2] else None,
-                "avg_cache_ratio": round(row[3], 3) if row[3] else None,
-                "total_prompt_tokens": row[4] or 0,
-                "total_completion_tokens": row[5] or 0,
+                "avg_prefill_tps": round(row[2], 1) if row[2] else None,
+                "avg_decode_tps": round(row[3], 1) if row[3] else None,
+                "avg_cache_ratio": round(row[4], 3) if row[4] else None,
+                "total_prompt_tokens": row[5] or 0,
+                "total_completion_tokens": row[6] or 0,
             }
 
 
@@ -133,7 +142,8 @@ async def get_summary_by_model(
         model,
         COUNT(*) as count,
         AVG(ttft_ms) as avg_ttft_ms,
-        AVG(completion_speed) as avg_tps,
+        AVG(prompt_speed) as avg_prefill_tps,
+        AVG(completion_speed) as avg_decode_tps,
         AVG(cached_ratio) as avg_cache_ratio
     FROM requests
     WHERE status = 'success' AND 1=1
@@ -154,8 +164,9 @@ async def get_summary_by_model(
                     "model": r[0],
                     "count": r[1],
                     "avg_ttft_ms": round(r[2], 1) if r[2] else None,
-                    "avg_tps": round(r[3], 1) if r[3] else None,
-                    "avg_cache_ratio": round(r[4], 3) if r[4] else None,
+                    "avg_prefill_tps": round(r[3], 1) if r[3] else None,
+                    "avg_decode_tps": round(r[4], 1) if r[4] else None,
+                    "avg_cache_ratio": round(r[5], 3) if r[5] else None,
                 }
                 for r in rows
             ]

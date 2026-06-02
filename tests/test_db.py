@@ -35,7 +35,10 @@ async def test_insert_and_retrieve_request(db_path):
         "ttft_ms": 40.0,
         "prompt_speed": 2500.0,
         "completion_speed": 52.1,
+        "total_tps": 150.0,
         "cached_ratio": 0.8,
+        "spec_draft_tokens": 20,
+        "spec_accepted_tokens": 12,
         "status": "success",
         "error_message": None,
     }
@@ -62,7 +65,10 @@ async def test_get_summary(db_path):
             "ttft_ms": 40.0,
             "prompt_speed": 2500.0,
             "completion_speed": 52.1,
+            "total_tps": 150.0,
             "cached_ratio": 0.8,
+            "spec_draft_tokens": 20,
+            "spec_accepted_tokens": 12,
             "status": "success",
             "error_message": None,
         })

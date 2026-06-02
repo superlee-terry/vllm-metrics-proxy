@@ -36,7 +36,7 @@ async def test_non_streaming_proxy_forwards_and_records(app, tmp_path):
         mock_resp.status_code = 200
         mock_resp.json.return_value = mock_response
         mock_resp.headers = {"content-type": "application/json"}
-        mock_instance.post = AsyncMock(return_value=mock_resp)
+        mock_instance.request = AsyncMock(return_value=mock_resp)
         MockClient.return_value = mock_instance
 
         transport = ASGITransport(app=app)
@@ -69,7 +69,7 @@ async def test_upstream_error_passes_through(app):
         mock_resp.status_code = 400
         mock_resp.json.return_value = {"error": "bad request"}
         mock_resp.headers = {"content-type": "application/json"}
-        mock_instance.post = AsyncMock(return_value=mock_resp)
+        mock_instance.request = AsyncMock(return_value=mock_resp)
         MockClient.return_value = mock_instance
 
         transport = ASGITransport(app=app)
@@ -88,7 +88,7 @@ async def test_upstream_unreachable_returns_502(app):
     with patch("vllm_metrics_proxy.proxy.httpx.AsyncClient") as MockClient:
         mock_instance = AsyncMock()
         mock_instance.__aenter__.return_value = mock_instance
-        mock_instance.post = AsyncMock(side_effect=Exception("connection refused"))
+        mock_instance.request = AsyncMock(side_effect=Exception("connection refused"))
         MockClient.return_value = mock_instance
 
         transport = ASGITransport(app=app)

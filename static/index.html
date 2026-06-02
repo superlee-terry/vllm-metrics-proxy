@@ -18,6 +18,7 @@
   --green: #3fb950;
   --red: #f85149;
   --yellow: #d29922;
+  --orange: #d18616;
   --card-radius: 8px;
   --font-mono: 'SF Mono', 'Cascadia Code', 'Fira Code', Consolas, monospace;
   --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
@@ -39,7 +40,7 @@ body {
 }
 
 .container {
-  max-width: 1200px;
+  max-width: 1400px;
   margin: 0 auto;
   padding: 20px 24px 40px;
 }
@@ -84,61 +85,65 @@ body {
   outline: none;
 }
 
-.time-select:hover {
-  border-color: var(--accent-dim);
-}
-
-.time-select:focus {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px rgba(31, 111, 235, 0.3);
-}
+.time-select:hover { border-color: var(--accent-dim); }
+.time-select:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(31, 111, 235, 0.3); }
 
 /* Summary Cards */
 .summary-grid {
   display: grid;
   grid-template-columns: repeat(5, 1fr);
   gap: 16px;
+  margin-bottom: 16px;
+}
+
+.engine-grid {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 16px;
   margin-bottom: 24px;
 }
 
-.summary-card {
+.summary-card, .engine-card {
   background: var(--bg-secondary);
   border: 1px solid var(--border);
   border-radius: var(--card-radius);
-  padding: 16px 18px;
+  padding: 14px 18px;
   transition: border-color 0.2s;
 }
 
-.summary-card:hover {
-  border-color: var(--accent-dim);
-}
+.summary-card:hover, .engine-card:hover { border-color: var(--accent-dim); }
 
-.summary-card .label {
+.summary-card .label, .engine-card .label {
   color: var(--text-secondary);
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 500;
   text-transform: uppercase;
   letter-spacing: 0.5px;
   margin-bottom: 6px;
 }
 
-.summary-card .value {
-  font-size: 24px;
+.summary-card .value, .engine-card .value {
+  font-size: 22px;
   font-weight: 700;
   font-family: var(--font-mono);
   color: var(--text-primary);
 }
 
-.summary-card .value.loading {
+.engine-card .value {
+  font-size: 20px;
+}
+
+.engine-card .value.loading {
   color: var(--text-muted);
-  font-size: 16px;
+  font-size: 14px;
   font-weight: 400;
 }
 
+.engine-card .value.awake { color: var(--green); }
+.engine-card .value.sleeping { color: var(--yellow); }
+
 /* Section */
-.section {
-  margin-bottom: 24px;
-}
+.section { margin-bottom: 24px; }
 
 .section-header {
   display: flex;
@@ -147,11 +152,7 @@ body {
   margin-bottom: 12px;
 }
 
-.section-title {
-  font-size: 15px;
-  font-weight: 600;
-  color: var(--text-primary);
-}
+.section-title { font-size: 15px; font-weight: 600; }
 
 .section-badge {
   background: var(--bg-tertiary);
@@ -163,12 +164,12 @@ body {
   font-family: var(--font-mono);
 }
 
-/* Model Breakdown Table */
-.model-table-wrapper {
+/* Tables */
+.model-table-wrapper, .requests-table-wrapper {
   background: var(--bg-secondary);
   border: 1px solid var(--border);
   border-radius: var(--card-radius);
-  overflow: hidden;
+  overflow-x: auto;
 }
 
 table {
@@ -179,30 +180,27 @@ table {
 table th {
   background: var(--bg-tertiary);
   color: var(--text-secondary);
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.5px;
-  padding: 10px 16px;
+  padding: 10px 14px;
   text-align: left;
   border-bottom: 1px solid var(--border);
+  white-space: nowrap;
 }
 
 table td {
-  padding: 10px 16px;
+  padding: 9px 14px;
   border-bottom: 1px solid var(--border);
   color: var(--text-primary);
   font-family: var(--font-mono);
   font-size: 13px;
+  white-space: nowrap;
 }
 
-table tr:last-child td {
-  border-bottom: none;
-}
-
-table tr:hover td {
-  background: rgba(88, 166, 255, 0.04);
-}
+table tr:last-child td { border-bottom: none; }
+table tr:hover td { background: rgba(88, 166, 255, 0.04); }
 
 .model-name {
   font-family: var(--font-mono);
@@ -210,40 +208,63 @@ table tr:hover td {
   color: var(--accent);
 }
 
-/* Request Log Table */
-.requests-table-wrapper {
-  background: var(--bg-secondary);
-  border: 1px solid var(--border);
-  border-radius: var(--card-radius);
-  overflow: hidden;
-}
-
 .requests-table-wrapper table td.time-col {
   color: var(--text-secondary);
-  white-space: nowrap;
 }
 
-.status-ok {
-  color: var(--green);
-  font-weight: 600;
+.status-ok { color: var(--green); font-weight: 600; }
+.status-err { color: var(--red); font-weight: 600; cursor: help; }
+.na { color: var(--text-muted); }
+
+.cached-hit { color: var(--green); }
+.cached-miss { color: var(--text-muted); }
+
+/* Active requests */
+#activeSection {
+  border: 1px solid var(--orange);
+  border-radius: var(--card-radius);
+  padding: 16px;
+  background: rgba(209, 134, 22, 0.05);
 }
 
-.status-err {
-  color: var(--red);
-  font-weight: 600;
-  cursor: help;
+.cancel-btn {
+  background: var(--red);
+  color: #fff;
+  border: none;
+  padding: 4px 12px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-family: var(--font-sans);
+  cursor: pointer;
+  transition: opacity 0.2s;
+}
+.cancel-btn:hover { opacity: 0.8; }
+.cancel-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.active-id {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-secondary);
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
-.na {
-  color: var(--text-muted);
+.stream-badge {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 11px;
+  font-weight: 500;
 }
+.stream-badge.streaming { background: rgba(63, 185, 80, 0.15); color: var(--green); }
+.stream-badge.non-stream { background: rgba(88, 166, 255, 0.15); color: var(--accent); }
+
+.status-cancelling { color: var(--orange); font-weight: 600; }
+.status-running { color: var(--green); font-weight: 600; }
 
 /* Load More */
-.load-more-bar {
-  display: flex;
-  justify-content: center;
-  padding: 12px;
-}
+.load-more-bar { display: flex; justify-content: center; padding: 12px; }
 
 .load-more-btn {
   background: var(--bg-tertiary);
@@ -257,67 +278,31 @@ table tr:hover td {
   transition: all 0.2s;
 }
 
-.load-more-btn:hover {
-  background: var(--accent-dim);
-  color: var(--text-primary);
-  border-color: var(--accent);
-}
-
-.load-more-btn:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
-}
+.load-more-btn:hover { background: var(--accent-dim); color: var(--text-primary); border-color: var(--accent); }
+.load-more-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 
 /* Empty / Error States */
-.empty-state {
-  text-align: center;
-  padding: 40px 20px;
-  color: var(--text-muted);
-  font-size: 14px;
-}
-
-.error-state {
-  text-align: center;
-  padding: 20px;
-  color: var(--red);
-  font-size: 13px;
-}
+.empty-state { text-align: center; padding: 40px 20px; color: var(--text-muted); font-size: 14px; }
 
 /* Connection indicator */
 .connection-dot {
   display: inline-block;
-  width: 8px;
-  height: 8px;
+  width: 8px; height: 8px;
   border-radius: 50%;
   margin-right: 6px;
   vertical-align: middle;
   background: var(--green);
 }
-
-.connection-dot.error {
-  background: var(--red);
-}
-
-.connection-dot.loading {
-  background: var(--yellow);
-}
+.connection-dot.error { background: var(--red); }
+.connection-dot.loading { background: var(--yellow); }
 
 /* Responsive */
-@media (max-width: 900px) {
-  .summary-grid {
-    grid-template-columns: repeat(3, 1fr);
-  }
+@media (max-width: 1100px) {
+  .summary-grid, .engine-grid { grid-template-columns: repeat(3, 1fr); }
 }
-
-@media (max-width: 600px) {
-  .summary-grid {
-    grid-template-columns: repeat(2, 1fr);
-  }
-  .header {
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 12px;
-  }
+@media (max-width: 700px) {
+  .summary-grid, .engine-grid { grid-template-columns: repeat(2, 1fr); }
+  .header { flex-direction: column; align-items: flex-start; gap: 12px; }
 }
 </style>
 </head>
@@ -338,27 +323,75 @@ table tr:hover td {
     </div>
   </div>
 
-  <!-- Summary Cards -->
+  <!-- Summary Cards (per-request averages) -->
   <div class="summary-grid">
     <div class="summary-card">
       <div class="label">总请求数</div>
       <div class="value" id="totalReqs">--</div>
     </div>
     <div class="summary-card">
+      <div class="label">总 Tokens</div>
+      <div class="value" id="totalTokens">--</div>
+    </div>
+    <div class="summary-card">
       <div class="label">平均 TTFT</div>
       <div class="value" id="avgTtft">--</div>
     </div>
     <div class="summary-card">
-      <div class="label">平均 TPS</div>
-      <div class="value" id="avgTps">--</div>
+      <div class="label">平均 Prefill T/s</div>
+      <div class="value" id="avgPrefillTps">--</div>
     </div>
     <div class="summary-card">
-      <div class="label">缓存命中率</div>
-      <div class="value" id="avgCache">--</div>
+      <div class="label">平均 Decode T/s</div>
+      <div class="value" id="avgDecodeTps">--</div>
     </div>
-    <div class="summary-card">
-      <div class="label">总 Tokens</div>
-      <div class="value" id="totalTokens">--</div>
+  </div>
+
+  <!-- Engine Stats (real-time from Prometheus) -->
+  <div class="engine-grid">
+    <div class="engine-card">
+      <div class="label">引擎状态</div>
+      <div class="value loading" id="engineState">--</div>
+    </div>
+    <div class="engine-card">
+      <div class="label">KV Cache 使用率</div>
+      <div class="value loading" id="kvCacheUsage">--</div>
+    </div>
+    <div class="engine-card">
+      <div class="label">投稿接受率</div>
+      <div class="value loading" id="specAcceptRate">--</div>
+    </div>
+    <div class="engine-card">
+      <div class="label">队列请求</div>
+      <div class="value loading" id="queueRequests">--</div>
+    </div>
+    <div class="engine-card">
+      <div class="label">引擎缓存命中率</div>
+      <div class="value loading" id="engineCacheHit">--</div>
+    </div>
+  </div>
+
+  <!-- Active Requests -->
+  <div class="section" id="activeSection" style="display:none;">
+    <div class="section-header">
+      <span class="section-title">活跃请求</span>
+      <span class="section-badge" id="activeCount">0</span>
+    </div>
+    <div class="requests-table-wrapper">
+      <table>
+        <thead>
+          <tr>
+            <th>请求 ID</th>
+            <th>Model</th>
+            <th>类型</th>
+            <th>已用时间</th>
+            <th>状态</th>
+            <th>操作</th>
+          </tr>
+        </thead>
+        <tbody id="activeTbody">
+        </tbody>
+      </table>
     </div>
   </div>
 
@@ -374,12 +407,13 @@ table tr:hover td {
             <th>Model</th>
             <th>请求数</th>
             <th>平均 TTFT</th>
-            <th>平均 TPS</th>
+            <th>平均 Prefill T/s</th>
+            <th>平均 Decode T/s</th>
             <th>缓存命中率</th>
           </tr>
         </thead>
         <tbody id="modelTbody">
-          <tr><td colspan="5" class="empty-state">加载中...</td></tr>
+          <tr><td colspan="6" class="empty-state">加载中...</td></tr>
         </tbody>
       </table>
     </div>
@@ -397,14 +431,19 @@ table tr:hover td {
           <tr>
             <th>时间</th>
             <th>Model</th>
-            <th>TTFT</th>
-            <th>TPS</th>
+            <th>输入</th>
             <th>缓存</th>
+            <th>Prefill T/s</th>
+            <th>TTFT</th>
+            <th>输出</th>
+            <th>Decode T/s</th>
+            <th>草稿接受</th>
+            <th>耗时</th>
             <th>状态</th>
           </tr>
         </thead>
         <tbody id="reqTbody">
-          <tr><td colspan="6" class="empty-state">加载中...</td></tr>
+          <tr><td colspan="11" class="empty-state">加载中...</td></tr>
         </tbody>
       </table>
       <div class="load-more-bar" id="loadMoreBar" style="display:none;">
@@ -429,10 +468,17 @@ table tr:hover td {
   var connDot = document.getElementById('connDot');
   var timeRangeSel = document.getElementById('timeRange');
   var totalReqsEl = document.getElementById('totalReqs');
-  var avgTtftEl = document.getElementById('avgTtft');
-  var avgTpsEl = document.getElementById('avgTps');
-  var avgCacheEl = document.getElementById('avgCache');
   var totalTokensEl = document.getElementById('totalTokens');
+  var avgTtftEl = document.getElementById('avgTtft');
+  var avgPrefillTpsEl = document.getElementById('avgPrefillTps');
+  var avgDecodeTpsEl = document.getElementById('avgDecodeTps');
+
+  var engineStateEl = document.getElementById('engineState');
+  var kvCacheUsageEl = document.getElementById('kvCacheUsage');
+  var specAcceptRateEl = document.getElementById('specAcceptRate');
+  var queueRequestsEl = document.getElementById('queueRequests');
+  var engineCacheHitEl = document.getElementById('engineCacheHit');
+
   var modelTbody = document.getElementById('modelTbody');
   var reqTbody = document.getElementById('reqTbody');
   var reqCountEl = document.getElementById('reqCount');
@@ -455,6 +501,7 @@ table tr:hover td {
 
   function formatMs(n) {
     if (n == null) return '--';
+    if (n >= 1000) return (n / 1000).toFixed(2) + ' s';
     return Math.round(n) + ' ms';
   }
 
@@ -488,9 +535,7 @@ table tr:hover td {
 
   async function fetchJSON(url) {
     var resp = await fetch(url);
-    if (!resp.ok) {
-      throw new Error('HTTP ' + resp.status);
-    }
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
     return resp.json();
   }
 
@@ -499,18 +544,66 @@ table tr:hover td {
   function renderSummary(data) {
     totalReqsEl.textContent = data.total_requests != null ? data.total_requests.toLocaleString() : '--';
     avgTtftEl.textContent = formatMs(data.avg_ttft_ms);
-    avgTpsEl.textContent = formatTps(data.avg_tps);
-    avgCacheEl.textContent = formatPercent(data.avg_cache_ratio);
+    avgPrefillTpsEl.textContent = formatTps(data.avg_prefill_tps);
+    avgDecodeTpsEl.textContent = formatTps(data.avg_decode_tps);
 
     var totalTokens = (data.total_prompt_tokens || 0) + (data.total_completion_tokens || 0);
     totalTokensEl.textContent = formatTokens(totalTokens);
+  }
+
+  // --- Engine stats ---
+
+  function renderEngineStats(data) {
+    if (data.error) {
+      engineStateEl.textContent = 'N/A';
+      engineStateEl.className = 'value na';
+      kvCacheUsageEl.textContent = '--';
+      kvCacheUsageEl.className = 'value';
+      specAcceptRateEl.textContent = '--';
+      specAcceptRateEl.className = 'value';
+      queueRequestsEl.textContent = '--';
+      queueRequestsEl.className = 'value';
+      engineCacheHitEl.textContent = '--';
+      engineCacheHitEl.className = 'value';
+      return;
+    }
+
+    // Engine state
+    if (data.engine_awake === 1) {
+      engineStateEl.textContent = 'Awake';
+      engineStateEl.className = 'value awake';
+    } else {
+      engineStateEl.textContent = 'Sleeping';
+      engineStateEl.className = 'value sleeping';
+    }
+
+    // KV Cache
+    kvCacheUsageEl.textContent = formatPercent(data.kv_cache_usage_pct);
+    kvCacheUsageEl.className = 'value';
+
+    // Spec decode acceptance
+    specAcceptRateEl.textContent = data.spec_decode_accept_rate != null ? formatPercent(data.spec_decode_accept_rate) : '--';
+    specAcceptRateEl.className = 'value';
+
+    // Queue
+    var queued = (data.num_requests_running || 0) + '/' + ((data.num_requests_running || 0) + (data.num_requests_waiting || 0));
+    queueRequestsEl.textContent = queued;
+    queueRequestsEl.className = 'value';
+
+    // Engine cache hit rate
+    if (data.total_prompt_tokens > 0) {
+      engineCacheHitEl.textContent = formatPercent(data.total_cached_tokens / data.total_prompt_tokens);
+    } else {
+      engineCacheHitEl.textContent = '--';
+    }
+    engineCacheHitEl.className = 'value';
   }
 
   // --- Model breakdown ---
 
   function renderModelBreakdown(byModel) {
     if (!byModel || byModel.length === 0) {
-      modelTbody.innerHTML = '<tr><td colspan="5" class="empty-state">暂无数据</td></tr>';
+      modelTbody.innerHTML = '<tr><td colspan="6" class="empty-state">暂无数据</td></tr>';
       return;
     }
     var html = '';
@@ -520,7 +613,8 @@ table tr:hover td {
         + '<td class="model-name" title="' + escapeHtml(m.model) + '">' + escapeHtml(m.model) + '</td>'
         + '<td>' + (m.count != null ? m.count : '--') + '</td>'
         + '<td>' + formatMs(m.avg_ttft_ms) + '</td>'
-        + '<td>' + formatTps(m.avg_tps) + '</td>'
+        + '<td>' + formatTps(m.avg_prefill_tps) + '</td>'
+        + '<td>' + formatTps(m.avg_decode_tps) + '</td>'
         + '<td>' + formatPercent(m.avg_cache_ratio) + '</td>'
         + '</tr>';
     }
@@ -530,38 +624,53 @@ table tr:hover td {
   // --- Request log ---
 
   function renderRequests(requests, append) {
-    if (!append) {
-      reqTbody.innerHTML = '';
-    }
+    if (!append) { reqTbody.innerHTML = ''; }
 
     if (!requests || requests.length === 0 && !append) {
-      reqTbody.innerHTML = '<tr><td colspan="6" class="empty-state">暂无数据</td></tr>';
+      reqTbody.innerHTML = '<tr><td colspan="11" class="empty-state">暂无数据</td></tr>';
       return;
     }
 
     var html = '';
     for (var i = 0; i < requests.length; i++) {
       var r = requests[i];
-      var isStreaming = r.stream === true || r.stream === 1;
       var isError = r.status !== 'success';
-      var ttft = isStreaming ? formatMs(r.ttft_ms) : '<span class="na">--</span>';
-      var tps = isStreaming ? formatTps(r.completion_speed) : '<span class="na">--</span>';
-      var cache = formatPercent(r.cached_ratio);
+
+      // Cached tokens column
+      var cacheHtml;
+      if (r.cached_tokens != null && r.cached_tokens > 0) {
+        cacheHtml = '<span class="cached-hit">' + r.cached_tokens + '</span>';
+      } else {
+        cacheHtml = '<span class="na">0</span>';
+      }
+
+      // Spec decode column: accepted/total
+      var specHtml = '<span class="na">--</span>';
+      if (r.spec_draft_tokens != null && r.spec_draft_tokens > 0) {
+        var accepted = r.spec_accepted_tokens != null ? r.spec_accepted_tokens : 0;
+        var rate = (accepted / r.spec_draft_tokens * 100).toFixed(0);
+        specHtml = accepted + '/' + r.spec_draft_tokens + ' <span class="na">(' + rate + '%)</span>';
+      }
 
       var statusHtml;
       if (isError) {
         var errTitle = r.error_message ? escapeHtml(r.error_message) : 'Error';
-        statusHtml = '<span class="status-err" title="' + errTitle + '">&#x2717; ' + escapeHtml(String(r.status).substring(0, 20)) + '</span>';
+        statusHtml = '<span class="status-err" title="' + errTitle + '">&#x2717;</span>';
       } else {
         statusHtml = '<span class="status-ok">&#x2713;</span>';
       }
 
       html += '<tr>'
         + '<td class="time-col">' + formatTime(r.created_at) + '</td>'
-        + '<td class="model-name" title="' + escapeHtml(r.model) + '">' + escapeHtml(truncateModel(r.model, 16)) + '</td>'
-        + '<td>' + ttft + '</td>'
-        + '<td>' + tps + '</td>'
-        + '<td>' + cache + '</td>'
+        + '<td class="model-name" title="' + escapeHtml(r.model) + '">' + escapeHtml(truncateModel(r.model, 14)) + '</td>'
+        + '<td>' + (r.prompt_tokens != null ? r.prompt_tokens : '--') + '</td>'
+        + '<td>' + cacheHtml + '</td>'
+        + '<td>' + formatTps(r.prompt_speed) + '</td>'
+        + '<td>' + formatMs(r.ttft_ms) + '</td>'
+        + '<td>' + (r.completion_tokens != null ? r.completion_tokens : '--') + '</td>'
+        + '<td>' + formatTps(r.completion_speed) + '</td>'
+        + '<td>' + specHtml + '</td>'
+        + '<td>' + formatMs(r.latency_ms) + '</td>'
         + '<td>' + statusHtml + '</td>'
         + '</tr>';
     }
@@ -586,7 +695,7 @@ table tr:hover td {
     reqCountEl.textContent = Math.min(reqOffset + reqLimit, reqTotal) + ' / ' + reqTotal + ' 条';
   }
 
-  // --- Load more (exposed globally for onclick) ---
+  // --- Load more ---
 
   window.loadMore = async function() {
     loadMoreBtn.disabled = true;
@@ -614,6 +723,68 @@ table tr:hover td {
       .replace(/"/g, '&quot;');
   }
 
+  // --- Active requests ---
+
+  var activeSectionEl = document.getElementById('activeSection');
+  var activeTbody = document.getElementById('activeTbody');
+  var activeCountEl = document.getElementById('activeCount');
+  var activePollTimer = null;
+
+  function renderActiveRequests(data) {
+    var requests = data.requests || [];
+    if (requests.length === 0) {
+      activeSectionEl.style.display = 'none';
+      return;
+    }
+    activeSectionEl.style.display = '';
+    activeCountEl.textContent = requests.length;
+
+    var html = '';
+    for (var i = 0; i < requests.length; i++) {
+      var r = requests[i];
+      var shortId = r.id ? r.id.substring(0, 8) : '--';
+      var typeBadge = r.stream
+        ? '<span class="stream-badge streaming">Stream</span>'
+        : '<span class="stream-badge non-stream">Sync</span>';
+      var statusLabel = r.cancelled
+        ? '<span class="status-cancelling">取消中</span>'
+        : '<span class="status-running">处理中</span>';
+      var cancelDisabled = r.cancelled ? ' disabled' : '';
+
+      html += '<tr>'
+        + '<td class="active-id" title="' + escapeHtml(r.id) + '">' + escapeHtml(shortId) + '</td>'
+        + '<td class="model-name">' + escapeHtml(truncateModel(r.model, 16)) + '</td>'
+        + '<td>' + typeBadge + '</td>'
+        + '<td>' + formatMs(r.elapsed_ms) + '</td>'
+        + '<td>' + statusLabel + '</td>'
+        + '<td><button class="cancel-btn"' + cancelDisabled + ' onclick="cancelReq(\'' + escapeHtml(r.id) + '\', this)">断开</button></td>'
+        + '</tr>';
+    }
+    activeTbody.innerHTML = html;
+  }
+
+  async function refreshActive() {
+    try {
+      var data = await fetchJSON('/api/active-requests');
+      renderActiveRequests(data);
+    } catch (e) {
+      // Silently fail — active requests are secondary info
+    }
+  }
+
+  window.cancelReq = async function(reqId, btn) {
+    if (!confirm('确认断开该请求？客户端将收到 499 错误。')) return;
+    btn.disabled = true;
+    btn.textContent = '断开中...';
+    try {
+      await fetch('/api/active-requests/' + encodeURIComponent(reqId) + '/cancel', { method: 'POST' });
+      refreshActive();
+    } catch (e) {
+      btn.textContent = '断开失败';
+      btn.disabled = false;
+    }
+  };
+
   // --- Main refresh ---
 
   async function refresh() {
@@ -624,11 +795,14 @@ table tr:hover td {
       renderSummary(summaryData);
       renderModelBreakdown(summaryData.by_model);
 
-      // Fetch initial request page
       var reqData = await fetchJSON('/api/requests?since=' + encodeURIComponent(currentSince) + '&limit=' + reqLimit + '&offset=0');
       reqOffset = reqData.offset;
       reqTotal = reqData.total;
       renderRequests(reqData.requests, false);
+
+      // Fetch engine stats + active requests
+      var engineData = await fetchJSON('/api/engine-stats');
+      renderEngineStats(engineData);
 
       setConnStatus('');
     } catch (e) {
@@ -637,11 +811,13 @@ table tr:hover td {
     }
   }
 
-  // --- Auto-refresh (poll every 5s) ---
+  // --- Auto-refresh (poll every 5s) + active requests (2s) ---
 
   function startPolling() {
     if (pollTimer) clearInterval(pollTimer);
     pollTimer = setInterval(refresh, 5000);
+    if (activePollTimer) clearInterval(activePollTimer);
+    activePollTimer = setInterval(refreshActive, 2000);
   }
 
   // --- Event listeners ---

@@ -23,8 +23,11 @@ class TestComputeMetrics:
         assert record["cached_tokens"] == 80
         assert record["latency_ms"] == 1000.0
         assert record["ttft_ms"] is None
-        assert record["completion_speed"] is None  # no TTFT for non-streaming
+        assert record["completion_speed"] is None
+        assert record["total_tps"] == 150.0
         assert record["cached_ratio"] == 0.8
+        assert record["spec_draft_tokens"] is None
+        assert record["spec_accepted_tokens"] is None
 
     def test_streaming_with_ttft(self):
         record = compute_metrics(
@@ -37,13 +40,18 @@ class TestComputeMetrics:
             reasoning_tokens=10,
             latency_ms=2000.0,
             ttft_ms=50.0,
+            spec_draft_tokens=20,
+            spec_accepted_tokens=12,
         )
         assert record["ttft_ms"] == 50.0
-        assert record["prompt_speed"] == 4000.0  # 200 / (50/1000)
+        assert record["prompt_speed"] == 4000.0
         assert record["completion_speed"] == pytest.approx(
             100 / ((2000.0 - 50.0) / 1000), rel=0.01
         )
+        assert record["total_tps"] == pytest.approx(300 / 2.0, rel=0.01)
         assert record["cached_ratio"] == 0.75
+        assert record["spec_draft_tokens"] == 20
+        assert record["spec_accepted_tokens"] == 12
 
     def test_zero_prompt_tokens_no_division_by_zero(self):
         record = compute_metrics(
