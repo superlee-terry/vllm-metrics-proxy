@@ -17,6 +17,7 @@ export VLLM_UPSTREAM="${VLLM_UPSTREAM:-http://localhost:11434}"
 export PROXY_PORT="${1:-${PROXY_PORT:-11435}}"
 export DB_PATH="${DB_PATH:-${SCRIPT_DIR}/metrics.db}"
 export LOG_LEVEL="${LOG_LEVEL:-INFO}"
+export AUTH_ENABLED="${AUTH_ENABLED:-false}"
 
 # ---- 颜色 ----
 GREEN='\033[0;32m'
@@ -32,6 +33,7 @@ echo -e "  上游 vLLM:  ${GREEN}${VLLM_UPSTREAM}${NC}"
 echo -e "  代理监听:   ${GREEN}http://0.0.0.0:${PROXY_PORT}${NC}"
 echo -e "  数据库:     ${DB_PATH}"
 echo -e "  日志级别:   ${LOG_LEVEL}"
+echo -e "  API Key:    ${AUTH_ENABLED}"
 echo ""
 echo -e "  Dashboard:  ${GREEN}http://localhost:${PROXY_PORT}/${NC}"
 echo -e "  API:        ${GREEN}http://localhost:${PROXY_PORT}/v1/...${NC}"

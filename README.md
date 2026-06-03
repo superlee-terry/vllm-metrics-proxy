@@ -109,6 +109,7 @@ server {
 | `PROXY_PORT` | `8000` | 代理监听端口 |
 | `DB_PATH` | `./metrics.db` | SQLite 数据库文件路径 |
 | `LOG_LEVEL` | `INFO` | 日志级别（DEBUG/INFO/WARNING/ERROR） |
+| `AUTH_ENABLED` | `false` | 是否启用 API Key 认证（`true`/`false`） |
 
 ## API 端点
 
@@ -133,6 +134,86 @@ server {
 | `/api/engine-stats` | GET | 实时引擎状态（Prometheus） |
 | `/api/active-requests` | GET | 活跃请求列表 |
 | `/api/active-requests/{id}/cancel` | POST | 断开指定请求 |
+| `/api/keys` | GET | 列出所有 API Key（掩码显示） |
+| `/api/keys` | POST | 创建 API Key |
+| `/api/keys/{key_id}` | DELETE | 删除 API Key |
+| `/api/keys/{key_id}` | PATCH | 更新 API Key（启用/禁用、修改过期时间） |
+
+### API Key 认证
+
+启用认证后，所有 `/v1/*` 代理请求必须携带有效的 API Key。Dashboard 和健康检查端点不受影响。
+
+#### 启用认证
+
+```bash
+AUTH_ENABLED=true VLLM_UPSTREAM=http://localhost:11434 PROXY_PORT=8080 vllm-metrics-proxy
+```
+
+#### 创建 API Key
+
+通过 Dashboard UI 或 API 创建：
+
+```bash
+# 创建永久 Key
+curl -X POST http://localhost:8080/api/keys \
+  -H "Content-Type: application/json" \
+  -d '{"name": "my-app"}'
+
+# 创建 30 天有效期的 Key
+curl -X POST http://localhost:8080/api/keys \
+  -H "Content-Type: application/json" \
+  -d '{"name": "temp-key", "expires_in": "30d"}'
+```
+
+创建成功后返回完整 Key（**只显示一次**）：
+
+```json
+{"id": "550e8400-e29b-41d4-a716-446655440000", "name": "my-app", "expired_at": null, "enabled": 1}
+```
+
+#### 使用 API Key
+
+支持两种传递方式：
+
+```bash
+# 方式一：Authorization: Bearer
+curl http://localhost:8080/v1/chat/completions \
+  -H "Authorization: Bearer 550e8400-e29b-41d4-a716-446655440000" \
+  -H "Content-Type: application/json" \
+  -d '{"model": "qwen3.6-27b", "messages": [{"role": "user", "content": "Hi"}]}'
+
+# 方式二：X-API-Key
+curl http://localhost:8080/v1/chat/completions \
+  -H "X-API-Key: 550e8400-e29b-41d4-a716-446655440000" \
+  -H "Content-Type: application/json" \
+  -d '{"model": "qwen3.6-27b", "messages": [{"role": "user", "content": "Hi"}]}'
+```
+
+#### 有效期格式
+
+| 格式 | 含义 |
+|------|------|
+| 不传 / `null` | 永不过期 |
+| `"1h"` | 1 小时 |
+| `"24h"` | 24 小时 |
+| `"7d"` | 7 天 |
+| `"30d"` | 30 天 |
+| `"90d"` | 90 天 |
+
+#### 管理 API Key
+
+```bash
+# 列出所有 Key（ID 已掩码）
+curl http://localhost:8080/api/keys
+
+# 禁用 Key
+curl -X PATCH http://localhost:8080/api/keys/{key_id} \
+  -H "Content-Type: application/json" \
+  -d '{"enabled": false}'
+
+# 删除 Key
+curl -X DELETE http://localhost:8080/api/keys/{key_id}
+```
 
 ## Dashboard 界面
 
@@ -141,6 +222,7 @@ server {
 - **Model 分组表**：按模型维度的请求量和平均指标
 - **活跃请求面板**：实时显示处理中的请求，支持一键断开
 - **请求日志表**：11 列详细指标，分页加载，5 秒自动刷新
+- **API Keys 面板**：创建/禁用/删除 API Key，创建时一次性显示完整 Key
 
 ## 开发
 
@@ -162,13 +244,14 @@ vllm-metrics-proxy/
 ├── vllm_metrics_proxy/
 │   ├── __main__.py          # CLI 入口
 │   ├── config.py            # 环境变量配置
+│   ├── auth.py              # API Key 认证 + CRUD
 │   ├── proxy.py             # 核心代理逻辑 + 活跃请求追踪
 │   ├── metrics.py           # 指标计算
 │   ├── vllm_metrics.py      # Prometheus 解析 + counter delta
 │   ├── db.py                # SQLite 数据层
 │   └── routes/
 │       ├── proxy.py         # /v1/* 代理路由 + 工具端点
-│       └── dashboard.py     # Dashboard API
+│       └── dashboard.py     # Dashboard API + Key 管理
 ├── static/
 │   └── index.html           # 单页 Dashboard UI
 ├── tests/                   # pytest 测试
