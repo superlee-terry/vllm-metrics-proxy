@@ -1,9 +1,12 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, Request
 from starlette.responses import FileResponse, JSONResponse
 
-from vllm_metrics_proxy.auth import create_api_key, delete_api_key, list_api_keys, update_api_key
+from vllm_metrics_proxy.auth import (
+    create_api_key, delete_api_key, list_api_keys, update_api_key,
+    verify_admin_token,
+)
 from vllm_metrics_proxy.config import settings
 from vllm_metrics_proxy.db import get_requests, get_requests_count, get_summary, get_summary_by_model
 from vllm_metrics_proxy.metrics import parse_since
@@ -101,7 +104,7 @@ async def cancel_request(request_id: str):
 # ---- API Key Management ----
 
 @router.post("/api/keys")
-async def create_key(request: Request):
+async def create_key(request: Request, _admin: None = Depends(verify_admin_token)):
     body = await request.json()
     name = body.get("name")
     if not name:
@@ -132,7 +135,7 @@ async def list_keys(request: Request):
 
 
 @router.delete("/api/keys/{key_id}")
-async def remove_key(request: Request, key_id: str):
+async def remove_key(request: Request, key_id: str, _admin: None = Depends(verify_admin_token)):
     deleted = await delete_api_key(request.app.state.db_path, key_id)
     if not deleted:
         return JSONResponse(status_code=404, content={"detail": "API key not found"})
@@ -140,7 +143,7 @@ async def remove_key(request: Request, key_id: str):
 
 
 @router.patch("/api/keys/{key_id}")
-async def patch_key(request: Request, key_id: str):
+async def patch_key(request: Request, key_id: str, _admin: None = Depends(verify_admin_token)):
     body = await request.json()
     enabled = body.get("enabled")
     expires_in = body.get("expires_in")

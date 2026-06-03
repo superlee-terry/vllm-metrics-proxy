@@ -18,6 +18,7 @@ export PROXY_PORT="${1:-${PROXY_PORT:-11435}}"
 export DB_PATH="${DB_PATH:-${SCRIPT_DIR}/metrics.db}"
 export LOG_LEVEL="${LOG_LEVEL:-INFO}"
 export AUTH_ENABLED="${AUTH_ENABLED:-false}"
+export ADMIN_TOKEN="${ADMIN_TOKEN:-}"
 
 # ---- 颜色 ----
 GREEN='\033[0;32m'
@@ -34,6 +35,7 @@ echo -e "  代理监听:   ${GREEN}http://0.0.0.0:${PROXY_PORT}${NC}"
 echo -e "  数据库:     ${DB_PATH}"
 echo -e "  日志级别:   ${LOG_LEVEL}"
 echo -e "  API Key:    ${AUTH_ENABLED}"
+echo -e "  管理口令:   ${ADMIN_TOKEN:-(未设置，Key管理不受限)}"
 echo ""
 echo -e "  Dashboard:  ${GREEN}http://localhost:${PROXY_PORT}/${NC}"
 echo -e "  API:        ${GREEN}http://localhost:${PROXY_PORT}/v1/...${NC}"

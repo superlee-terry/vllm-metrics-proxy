@@ -110,6 +110,7 @@ server {
 | `DB_PATH` | `./metrics.db` | SQLite 数据库文件路径 |
 | `LOG_LEVEL` | `INFO` | 日志级别（DEBUG/INFO/WARNING/ERROR） |
 | `AUTH_ENABLED` | `false` | 是否启用 API Key 认证（`true`/`false`） |
+| `ADMIN_TOKEN` | `""` (空) | 管理员口令，保护 Key 创建/修改/删除操作（空=不限） |
 
 ## API 端点
 
@@ -202,8 +203,18 @@ curl http://localhost:8080/v1/chat/completions \
 
 #### 管理 API Key
 
+设置了 `ADMIN_TOKEN` 后，创建/修改/删除 Key 需要携带管理员口令：
+
 ```bash
-# 列出所有 Key（ID 已掩码）
+# 创建 Key（带管理口令）
+curl -X POST http://localhost:8080/api/keys \
+  -H "Content-Type: application/json" \
+  -H "X-Admin-Token: your-secret" \
+  -d '{"name": "my-app"}'
+```
+
+```bash
+# 列出所有 Key（ID 已掩码，无需管理口令）
 curl http://localhost:8080/api/keys
 
 # 禁用 Key

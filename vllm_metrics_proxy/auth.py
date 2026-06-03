@@ -174,3 +174,20 @@ async def verify_api_key(request: Request) -> str:
             raise HTTPException(status_code=401, detail="API key has expired")
 
     return key_id
+
+
+# ---- Admin token verification ----
+
+async def verify_admin_token(request: Request) -> None:
+    """FastAPI Depends dependency for admin-only key management endpoints.
+
+    When admin_token is configured (non-empty), requests must include
+    X-Admin-Token header matching it. Otherwise, pass through.
+    Raises 403 on mismatch.
+    """
+    expected = request.app.state.settings.admin_token
+    if not expected:
+        return  # no admin token configured — skip verification
+    provided = request.headers.get("x-admin-token", "")
+    if provided != expected:
+        raise HTTPException(status_code=403, detail="Invalid or missing admin token")

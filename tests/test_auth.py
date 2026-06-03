@@ -377,3 +377,80 @@ async def test_update_key_api_disable_enable(app_with_keys):
         assert resp.status_code == 200
         keys = (await client.get("/api/keys")).json()
         assert keys["keys"][0]["enabled"] == 1
+
+
+# ---- Admin token tests ----
+
+@pytest_asyncio.fixture
+async def app_with_admin_token(tmp_path):
+    """App with admin_token configured."""
+    db_path = str(tmp_path / "test.db")
+    await init_db(db_path)
+    app = create_app(settings_override=Settings(admin_token="my-secret"), db_path=db_path)
+    return app, db_path
+
+
+@pytest.mark.asyncio
+async def test_admin_token_rejects_create_without_token(app_with_admin_token):
+    app, _ = app_with_admin_token
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post("/api/keys", json={"name": "fail"})
+    assert resp.status_code == 403
+    assert "admin token" in resp.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_admin_token_rejects_wrong_token(app_with_admin_token):
+    app, _ = app_with_admin_token
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/api/keys", json={"name": "fail"},
+            headers={"X-Admin-Token": "wrong-password"},
+        )
+    assert resp.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_admin_token_accepts_correct_token(app_with_admin_token):
+    app, _ = app_with_admin_token
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/api/keys", json={"name": "ok"},
+            headers={"X-Admin-Token": "my-secret"},
+        )
+    assert resp.status_code == 200
+    assert resp.json()["name"] == "ok"
+
+
+@pytest.mark.asyncio
+async def test_admin_token_rejects_delete_without_token(app_with_admin_token):
+    app, db_path = app_with_admin_token
+    # Create key directly (bypass API auth)
+    key = await create_api_key(db_path, name="to-delete")
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.delete(f"/api/keys/{key['id']}")
+    assert resp.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_admin_token_rejects_patch_without_token(app_with_admin_token):
+    app, db_path = app_with_admin_token
+    key = await create_api_key(db_path, name="to-toggle")
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.patch(f"/api/keys/{key['id']}", json={"enabled": False})
+    assert resp.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_admin_token_list_still_public(app_with_admin_token):
+    """GET /api/keys should still be public even with admin_token set."""
+    app, _ = app_with_admin_token
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get("/api/keys")
+    assert resp.status_code == 200

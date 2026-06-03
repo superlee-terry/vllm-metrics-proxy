@@ -560,6 +560,7 @@ table tr:hover td { background: rgba(88, 166, 255, 0.04); }
         <option value="30d">30 天</option>
         <option value="90d">90 天</option>
       </select>
+      <input type="password" id="adminTokenInput" placeholder="管理口令">
       <button class="create-btn" onclick="createKey()">创建 Key</button>
     </div>
     <div class="key-reveal" id="keyReveal" style="display:none;">
@@ -1056,6 +1057,7 @@ table tr:hover td { background: rgba(88, 166, 255, 0.04); }
   var keyRevealCodeEl = document.getElementById('keyRevealCode');
   var keyNameInput = document.getElementById('keyNameInput');
   var keyExpirySelect = document.getElementById('keyExpirySelect');
+  var adminTokenInput = document.getElementById('adminTokenInput');
   var revealedKey = null;
   var keyMaskToId = {};
 
@@ -1115,14 +1117,17 @@ table tr:hover td { background: rgba(88, 166, 255, 0.04); }
     var expiresIn = keyExpirySelect.value || null;
     var body = { name: name };
     if (expiresIn) body.expires_in = expiresIn;
+    var headers = { 'Content-Type': 'application/json' };
+    var token = adminTokenInput.value.trim();
+    if (token) headers['X-Admin-Token'] = token;
     try {
       var resp = await fetch('/api/keys', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: headers,
         body: JSON.stringify(body),
       });
       if (!resp.ok) {
-        var err = await resp.json();
+        var err = await resp.json().catch(function() { return {}; });
         alert('创建失败: ' + (err.detail || resp.status));
         return;
       }
@@ -1150,10 +1155,13 @@ table tr:hover td { background: rgba(88, 166, 255, 0.04); }
     if (!confirm((enable ? '启用' : '禁用') + '该 Key？')) return;
     var keyId = keyMaskToId[maskedId];
     if (!keyId) { alert('找不到对应 Key'); return; }
+    var headers = { 'Content-Type': 'application/json' };
+    var token = adminTokenInput.value.trim();
+    if (token) headers['X-Admin-Token'] = token;
     try {
       await fetch('/api/keys/' + encodeURIComponent(keyId), {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
+        headers: headers,
         body: JSON.stringify({ enabled: enable }),
       });
       refreshKeys();
@@ -1166,8 +1174,11 @@ table tr:hover td { background: rgba(88, 166, 255, 0.04); }
     if (!confirm('确认删除该 Key？此操作不可撤销。')) return;
     var keyId = keyMaskToId[maskedId];
     if (!keyId) { alert('找不到对应 Key'); return; }
+    var headers = {};
+    var token = adminTokenInput.value.trim();
+    if (token) headers['X-Admin-Token'] = token;
     try {
-      var resp = await fetch('/api/keys/' + encodeURIComponent(keyId), { method: 'DELETE' });
+      var resp = await fetch('/api/keys/' + encodeURIComponent(keyId), { method: 'DELETE', headers: headers });
       if (!resp.ok) { alert('删除失败'); return; }
       refreshKeys();
     } catch (e) {
