@@ -129,6 +129,7 @@ server {
 | 路由 | 方法 | 说明 |
 |------|------|------|
 | `/` | GET | Dashboard 页面 |
+| `/admin` | GET | API Keys 管理页面（需要管理口令） |
 | `/api/health` | GET | 代理健康状态 |
 | `/api/summary?since=1h` | GET | 汇总统计 + 按 Model 分组 |
 | `/api/requests?since=1h&limit=50&offset=0` | GET | 分页请求日志 |
@@ -233,7 +234,7 @@ curl -X DELETE http://localhost:8080/api/keys/{key_id}
 - **Model 分组表**：按模型维度的请求量和平均指标
 - **活跃请求面板**：实时显示处理中的请求，支持一键断开
 - **请求日志表**：11 列详细指标，分页加载，5 秒自动刷新
-- **API Keys 面板**：创建/禁用/删除 API Key，创建时一次性显示完整 Key
+- **API Keys 面板**：独立管理页面 (`/admin`)，创建时一次性显示完整 Key
 
 ## 开发
 
