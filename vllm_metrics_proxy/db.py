@@ -27,6 +27,15 @@ CREATE TABLE IF NOT EXISTS requests (
 CREATE INDEX IF NOT EXISTS idx_requests_created_at ON requests(created_at);
 CREATE INDEX IF NOT EXISTS idx_requests_model ON requests(model);
 CREATE INDEX IF NOT EXISTS idx_requests_status ON requests(status);
+
+CREATE TABLE IF NOT EXISTS api_keys (
+    id          TEXT PRIMARY KEY,
+    name        TEXT NOT NULL,
+    expired_at  TEXT,
+    created_at  TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
+    enabled     INTEGER NOT NULL DEFAULT 1
+);
+CREATE INDEX IF NOT EXISTS idx_api_keys_expired_at ON api_keys(expired_at);
 """
 
 INSERT_SQL = """
@@ -44,6 +53,18 @@ INSERT INTO requests (
     :status, :error_message
 )
 """
+
+
+def _since_params(since_hours: float | None) -> tuple[str, list]:
+    """Return SQL fragment and params for since_hours time filter.
+
+    Uses datetime('now', 'localtime', '-N seconds') to match created_at
+    which is stored in localtime.
+    """
+    if since_hours is None:
+        return "", []
+    seconds = int(since_hours * 3600)
+    return " AND created_at >= datetime('now', 'localtime', ?)", [f"-{seconds} seconds"]
 
 
 async def init_db(db_path: str) -> None:
@@ -65,9 +86,9 @@ async def get_requests(
     query = "SELECT * FROM requests WHERE 1=1"
     params: list = []
 
-    if since_hours is not None:
-        query += " AND created_at >= datetime('now', ?)"
-        params.append(f"-{since_hours} hours")
+    since_clause, since_p = _since_params(since_hours)
+    query += since_clause
+    params.extend(since_p)
 
     if model:
         query += " AND model = ?"
@@ -89,9 +110,9 @@ async def get_requests_count(
     query = "SELECT COUNT(*) FROM requests WHERE 1=1"
     params: list = []
 
-    if since_hours is not None:
-        query += " AND created_at >= datetime('now', ?)"
-        params.append(f"-{since_hours} hours")
+    since_clause, since_p = _since_params(since_hours)
+    query += since_clause
+    params.extend(since_p)
 
     async with aiosqlite.connect(db_path) as conn:
         async with conn.execute(query, params) as cur:
@@ -116,9 +137,9 @@ async def get_summary(
     """
     params: list = []
 
-    if since_hours is not None:
-        query = query.replace("AND 1=1", "AND created_at >= datetime('now', ?)")
-        params.append(f"-{since_hours} hours")
+    since_clause, since_p = _since_params(since_hours)
+    query = query.replace("AND 1=1", since_clause.strip())
+    params.extend(since_p)
 
     async with aiosqlite.connect(db_path) as conn:
         async with conn.execute(query, params) as cur:
@@ -152,9 +173,9 @@ async def get_summary_by_model(
     """
     params: list = []
 
-    if since_hours is not None:
-        query = query.replace("AND 1=1", "AND created_at >= datetime('now', ?)")
-        params.append(f"-{since_hours} hours")
+    since_clause, since_p = _since_params(since_hours)
+    query = query.replace("AND 1=1", since_clause.strip())
+    params.extend(since_p)
 
     async with aiosqlite.connect(db_path) as conn:
         async with conn.execute(query, params) as cur:
