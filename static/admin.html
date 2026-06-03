@@ -227,7 +227,10 @@ table tr:hover td { background: rgba(88,166,255,0.04); }
     <!-- Toolbar -->
     <div class="toolbar">
       <span class="toolbar-title">已创建的 Key</span>
-      <span class="toolbar-badge" id="keysCount">0</span>
+      <div style="display:flex;align-items:center;gap:12px;">
+        <span class="toolbar-badge" id="keysCount">0</span>
+        <button class="btn" onclick="createKey()">+ 创建 Key</button>
+      </div>
     </div>
 
     <!-- Table -->
@@ -247,6 +250,17 @@ table tr:hover td { background: rgba(88,166,255,0.04); }
           <tr><td colspan="6" class="empty-state">加载中...</td></tr>
         </tbody>
       </table>
+      <!-- Full Key Reveal Modal -->
+      <div id="copyModal" class="hidden" style="position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.6);z-index:100;display:flex;align-items:center;justify-content:center;">
+        <div style="background:var(--bg-secondary);border:1px solid var(--border);border-radius:8px;padding:24px;max-width:480px;width:90%;">
+          <div style="color:var(--accent);font-size:13px;font-weight:600;margin-bottom:12px;">完整 Key</div>
+          <div id="copyModalCode" style="font-family:var(--font-mono);font-size:14px;color:var(--text-primary);word-break:break-all;padding:12px;background:var(--bg-primary);border-radius:6px;margin-bottom:16px;"></div>
+          <div style="display:flex;gap:10px;justify-content:flex-end;">
+            <button class="btn-sm" onclick="closeCopyModal()">关闭</button>
+            <button class="btn" onclick="copyFullKey()" style="padding:5px 16px;">复制</button>
+          </div>
+        </div>
+      </div>
     </div>
   </div>
 </div>
@@ -405,6 +419,27 @@ table tr:hover td { background: rgba(88,166,255,0.04); }
     return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
   }
 
+  var fullKeyForCopy = '';
+
+  window.showCopyModal = function(maskedId) {
+    var keyId = keyMaskToId[maskedId];
+    if (!keyId) return;
+    fullKeyForCopy = keyId;
+    document.getElementById('copyModalCode').textContent = keyId;
+    document.getElementById('copyModal').classList.remove('hidden');
+  };
+
+  window.closeCopyModal = function() {
+    document.getElementById('copyModal').classList.add('hidden');
+  };
+
+  window.copyFullKey = function() {
+    if (!fullKeyForCopy) return;
+    navigator.clipboard.writeText(fullKeyForCopy).then(function() {
+      closeCopyModal();
+    });
+  };
+
   async function refreshKeys() {
     try {
       var resp = await fetch('/api/keys');
@@ -429,6 +464,7 @@ table tr:hover td { background: rgba(88,166,255,0.04); }
           + '<td>' + formatDate(k.expired_at) + '</td>'
           + '<td><span class="' + st.cls + '">' + st.label + '</span></td>'
           + '<td>'
+          +   '<button class="btn-sm" onclick="showCopyModal(\'' + escapeHtml(k.masked_id) + '\')">复制</button> '
           +   '<button class="btn-danger" onclick="toggleKey(\'' + escapeHtml(k.masked_id) + '\',' + !k.enabled + ')">' + toggleLabel + '</button> '
           +   '<button class="btn-danger" onclick="deleteKey(\'' + escapeHtml(k.masked_id) + '\')">删除</button>'
           + '</td>'
