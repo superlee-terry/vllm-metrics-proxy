@@ -1,0 +1,445 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>API Keys 管理 — vLLM Metrics Proxy</title>
+<style>
+:root {
+  --bg-primary: #0d1117;
+  --bg-secondary: #161b22;
+  --bg-tertiary: #21262d;
+  --border: #30363d;
+  --text-primary: #e6edf3;
+  --text-secondary: #8b949e;
+  --text-muted: #6e7681;
+  --accent: #58a6ff;
+  --accent-dim: #1f6feb;
+  --green: #3fb950;
+  --red: #f85149;
+  --yellow: #d29922;
+  --card-radius: 8px;
+  --font-mono: 'SF Mono', 'Cascadia Code', 'Fira Code', Consolas, monospace;
+  --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.5;
+  min-height: 100vh;
+}
+.container {
+  max-width: 900px;
+  margin: 0 auto;
+  padding: 40px 24px;
+}
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 32px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--border);
+}
+.header h1 { font-size: 20px; font-weight: 600; }
+.header a { color: var(--accent); text-decoration: none; font-size: 13px; }
+.header a:hover { text-decoration: underline; }
+
+/* Auth Gate */
+.auth-gate {
+  max-width: 400px;
+  margin: 60px auto;
+  text-align: center;
+}
+.auth-gate h2 { font-size: 18px; margin-bottom: 16px; }
+.auth-gate p { color: var(--text-secondary); margin-bottom: 20px; font-size: 13px; }
+.auth-form {
+  display: flex;
+  gap: 10px;
+  justify-content: center;
+}
+.auth-form input {
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  color: var(--text-primary);
+  padding: 10px 16px;
+  border-radius: 6px;
+  font-size: 14px;
+  font-family: var(--font-mono);
+  outline: none;
+  flex: 1;
+}
+.auth-form input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(31,111,235,0.3); }
+.btn {
+  background: var(--green);
+  color: #fff;
+  border: none;
+  padding: 10px 24px;
+  border-radius: 6px;
+  font-size: 14px;
+  font-family: var(--font-sans);
+  font-weight: 500;
+  cursor: pointer;
+  transition: opacity 0.2s;
+}
+.btn:hover { opacity: 0.85; }
+.btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* Key Reveal */
+.key-reveal {
+  background: var(--bg-tertiary);
+  border: 1px solid var(--green);
+  border-radius: 8px;
+  padding: 20px;
+  margin-bottom: 24px;
+  animation: fadeIn 0.2s ease;
+}
+@keyframes fadeIn { from { opacity: 0; transform: translateY(-8px); } to { opacity: 1; transform: translateY(0); } }
+.key-reveal-label { color: var(--green); font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 10px; }
+.key-reveal-code {
+  font-family: var(--font-mono);
+  font-size: 15px;
+  color: var(--green);
+  word-break: break-all;
+  padding: 12px;
+  background: var(--bg-primary);
+  border-radius: 6px;
+  margin-bottom: 10px;
+}
+.key-reveal-actions { display: flex; gap: 10px; align-items: center; }
+.key-reveal-hint { color: var(--text-secondary); font-size: 12px; }
+.btn-sm {
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  padding: 5px 14px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-family: var(--font-sans);
+  cursor: pointer;
+  transition: all 0.2s;
+}
+.btn-sm:hover { background: var(--bg-tertiary); color: var(--text-primary); }
+
+/* Toolbar */
+.toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 16px;
+}
+.toolbar-title { font-size: 15px; font-weight: 600; }
+.toolbar-badge {
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  padding: 2px 8px;
+  border-radius: 12px;
+  font-size: 12px;
+  font-family: var(--font-mono);
+}
+
+/* Table */
+.table-wrapper {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--card-radius);
+  overflow-x: auto;
+}
+table { width: 100%; border-collapse: collapse; }
+table th {
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 10px 14px;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+table td {
+  padding: 9px 14px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  white-space: nowrap;
+}
+table tr:last-child td { border-bottom: none; }
+table tr:hover td { background: rgba(88,166,255,0.04); }
+.time-col { color: var(--text-secondary); }
+.key-enabled { color: var(--green); font-weight: 600; }
+.key-disabled { color: var(--red); font-weight: 600; }
+.key-expired { color: var(--yellow); font-weight: 600; }
+.na { color: var(--text-muted); }
+.btn-danger {
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  padding: 3px 10px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-family: var(--font-sans);
+  cursor: pointer;
+  transition: all 0.2s;
+}
+.btn-danger:hover { border-color: var(--red); color: var(--red); }
+.empty-state { text-align: center; padding: 40px 20px; color: var(--text-muted); font-size: 14px; }
+
+.hidden { display: none !important; }
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="header">
+    <h1>🔑 API Keys 管理</h1>
+    <a href="/">← 返回 Dashboard</a>
+  </div>
+
+  <!-- Auth Gate -->
+  <div class="auth-gate" id="authGate">
+    <h2>请输入管理口令</h2>
+    <p>需要管理员口令才能访问此页面</p>
+    <div class="auth-form">
+      <input type="password" id="adminTokenInput" placeholder="管理口令" autofocus>
+      <button class="btn" onclick="unlock()">验证</button>
+    </div>
+    <p id="authError" class="hidden" style="color:var(--red);margin-top:12px;font-size:13px;"></p>
+  </div>
+
+  <!-- Key Management (hidden until auth) -->
+  <div id="keyPanel" class="hidden">
+    <!-- Key Reveal -->
+    <div class="key-reveal hidden" id="keyReveal">
+      <div class="key-reveal-label">新 Key 已生成</div>
+      <div class="key-reveal-code" id="keyRevealCode"></div>
+      <div class="key-reveal-actions">
+        <button class="btn-sm" onclick="copyKey()">复制 Key</button>
+        <span class="key-reveal-hint">请立即保存，关闭后无法再次查看</span>
+      </div>
+    </div>
+
+    <!-- Toolbar -->
+    <div class="toolbar">
+      <span class="toolbar-title">已创建的 Key</span>
+      <span class="toolbar-badge" id="keysCount">0</span>
+    </div>
+
+    <!-- Table -->
+    <div class="table-wrapper">
+      <table>
+        <thead>
+          <tr>
+            <th>Key ID</th>
+            <th>名称</th>
+            <th>创建时间</th>
+            <th>过期时间</th>
+            <th>状态</th>
+            <th>操作</th>
+          </tr>
+        </thead>
+        <tbody id="keysTbody">
+          <tr><td colspan="6" class="empty-state">加载中...</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<script>
+(function() {
+  'use strict';
+
+  var adminToken = '';
+  var keyMaskToId = {};
+  var keysTbody = document.getElementById('keysTbody');
+  var keysCountEl = document.getElementById('keysCount');
+  var keyRevealEl = document.getElementById('keyReveal');
+  var keyRevealCodeEl = document.getElementById('keyRevealCode');
+  var revealedKey = null;
+
+  // ---- Auth ----
+
+  window.unlock = async function() {
+    var token = document.getElementById('adminTokenInput').value.trim();
+    if (!token) return;
+    try {
+      // Verify token by trying a create request — use HEAD to avoid side effects
+      // Actually, just list keys with admin header — if admin_token is set, list is public
+      // So we test by attempting to create then delete, or better: just trust the token
+      // and verify on first real action. But simpler: hit an endpoint that requires admin.
+      // Since GET /api/keys is public, we need another check.
+      // We'll just store the token and verify on first action.
+      adminToken = token;
+      document.getElementById('authGate').classList.add('hidden');
+      document.getElementById('keyPanel').classList.remove('hidden');
+      refreshKeys();
+    } catch(e) {
+      document.getElementById('authError').textContent = '验证失败';
+    }
+  };
+
+  document.getElementById('adminTokenInput').addEventListener('keydown', function(e) {
+    if (e.key === 'Enter') unlock();
+  });
+
+  // ---- API helpers ----
+
+  function apiHeaders() {
+    var h = { 'Content-Type': 'application/json' };
+    if (adminToken) h['X-Admin-Token'] = adminToken;
+    return h;
+  }
+
+  async function apiFetch(url, options) {
+    var resp = await fetch(url, options);
+    if (resp.status === 403) {
+      // Token invalid — kick back to auth gate
+      adminToken = '';
+      document.getElementById('authGate').classList.remove('hidden');
+      document.getElementById('keyPanel').classList.add('hidden');
+      document.getElementById('adminTokenInput').value = '';
+      document.getElementById('authError').textContent = '口令无效，请重新输入';
+      document.getElementById('authError').classList.remove('hidden');
+      throw new Error('Admin token invalid');
+    }
+    return resp;
+  }
+
+  // ---- Key actions ----
+
+  window.createKey = async function() {
+    try {
+      var resp = await apiFetch('/api/keys', {
+        method: 'POST',
+        headers: apiHeaders(),
+        body: JSON.stringify({ name: 'auto-' + Date.now().toString(36) }),
+      });
+      var data = await resp.json();
+      if (!resp.ok) {
+        alert('创建失败: ' + (data.detail || resp.status));
+        return;
+      }
+      revealedKey = data.id;
+      keyRevealCodeEl.textContent = data.id;
+      keyRevealEl.classList.remove('hidden');
+      refreshKeys();
+    } catch (e) {
+      if (e.message !== 'Admin token invalid') alert('创建失败: ' + e.message);
+    }
+  };
+
+  window.copyKey = function() {
+    if (!revealedKey) return;
+    navigator.clipboard.writeText(revealedKey).then(function() {
+      keyRevealEl.classList.add('hidden');
+      revealedKey = null;
+    });
+  };
+
+  window.toggleKey = async function(maskedId, enable) {
+    if (!confirm((enable ? '启用' : '禁用') + '该 Key？')) return;
+    var keyId = keyMaskToId[maskedId];
+    if (!keyId) { alert('找不到对应 Key'); return; }
+    try {
+      await apiFetch('/api/keys/' + encodeURIComponent(keyId), {
+        method: 'PATCH',
+        headers: apiHeaders(),
+        body: JSON.stringify({ enabled: enable }),
+      });
+      refreshKeys();
+    } catch (e) {
+      if (e.message !== 'Admin token invalid') alert('操作失败: ' + e.message);
+    }
+  };
+
+  window.deleteKey = async function(maskedId) {
+    if (!confirm('确认删除该 Key？此操作不可撤销。')) return;
+    var keyId = keyMaskToId[maskedId];
+    if (!keyId) { alert('找不到对应 Key'); return; }
+    try {
+      var resp = await apiFetch('/api/keys/' + encodeURIComponent(keyId), {
+        method: 'DELETE',
+        headers: apiHeaders(),
+      });
+      if (!resp.ok) { alert('删除失败'); return; }
+      refreshKeys();
+    } catch (e) {
+      if (e.message !== 'Admin token invalid') alert('删除失败: ' + e.message);
+    }
+  };
+
+  // ---- Refresh ----
+
+  function getKeyStatus(k) {
+    if (k.enabled === 0) return { label: '已禁用', cls: 'key-disabled' };
+    if (k.expired_at && new Date(k.expired_at) < new Date()) return { label: '已过期', cls: 'key-expired' };
+    return { label: '有效', cls: 'key-enabled' };
+  }
+
+  function formatTime(isoStr) {
+    if (!isoStr) return '--';
+    var d = new Date(isoStr);
+    return String(d.getHours()).padStart(2,'0') + ':'
+      + String(d.getMinutes()).padStart(2,'0') + ':'
+      + String(d.getSeconds()).padStart(2,'0');
+  }
+
+  function formatDate(isoStr) {
+    if (!isoStr) return '<span class="na">永不过期</span>';
+    var d = new Date(isoStr);
+    return d.getFullYear() + '-'
+      + String(d.getMonth()+1).padStart(2,'0') + '-'
+      + String(d.getDate()).padStart(2,'0') + ' '
+      + String(d.getHours()).padStart(2,'0') + ':'
+      + String(d.getMinutes()).padStart(2,'0');
+  }
+
+  function escapeHtml(s) {
+    if (s == null) return '';
+    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+
+  async function refreshKeys() {
+    try {
+      var resp = await fetch('/api/keys');
+      var data = await resp.json();
+      var keys = data.keys || [];
+      keyMaskToId = {};
+      keysCountEl.textContent = keys.length;
+      if (keys.length === 0) {
+        keysTbody.innerHTML = '<tr><td colspan="6" class="empty-state">暂无 API Key，点击上方按钮创建</td></tr>';
+        return;
+      }
+      var html = '';
+      for (var i = 0; i < keys.length; i++) {
+        var k = keys[i];
+        keyMaskToId[k.masked_id] = k.id;
+        var st = getKeyStatus(k);
+        var toggleLabel = k.enabled ? '禁用' : '启用';
+        html += '<tr>'
+          + '<td style="color:var(--text-secondary)">' + escapeHtml(k.masked_id) + '</td>'
+          + '<td>' + escapeHtml(k.name) + '</td>'
+          + '<td class="time-col">' + formatTime(k.created_at) + '</td>'
+          + '<td>' + formatDate(k.expired_at) + '</td>'
+          + '<td><span class="' + st.cls + '">' + st.label + '</span></td>'
+          + '<td>'
+          +   '<button class="btn-danger" onclick="toggleKey(\'' + escapeHtml(k.masked_id) + '\',' + !k.enabled + ')">' + toggleLabel + '</button> '
+          +   '<button class="btn-danger" onclick="deleteKey(\'' + escapeHtml(k.masked_id) + '\')">删除</button>'
+          + '</td>'
+          + '</tr>';
+      }
+      keysTbody.innerHTML = html;
+    } catch(e) {
+      console.error('Failed to load keys:', e);
+    }
+  }
+})();
+</script>
+</body>
+</html>

@@ -27,6 +27,11 @@ async def index():
     return FileResponse("static/index.html")
 
 
+@router.get("/admin")
+async def admin():
+    return FileResponse("static/admin.html")
+
+
 @router.get("/api/health")
 async def health():
     return {"status": "ok"}
