@@ -9,7 +9,7 @@ router = APIRouter()
 
 @router.api_route("/v1/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"], response_model=None)
 async def forward_v1(request: Request, key_id: str = Depends(verify_api_key)):
-    return await proxy_request(request)
+    return await proxy_request(request, key_id=key_id)
 
 
 @router.get("/health", include_in_schema=False)

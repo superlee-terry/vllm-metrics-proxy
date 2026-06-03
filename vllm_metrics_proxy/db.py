@@ -21,12 +21,14 @@ CREATE TABLE IF NOT EXISTS requests (
     spec_draft_tokens   INTEGER,
     spec_accepted_tokens INTEGER,
     status          TEXT NOT NULL DEFAULT 'success',
-    error_message   TEXT
+    error_message   TEXT,
+    api_key_id      TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_requests_created_at ON requests(created_at);
 CREATE INDEX IF NOT EXISTS idx_requests_model ON requests(model);
 CREATE INDEX IF NOT EXISTS idx_requests_status ON requests(status);
+CREATE INDEX IF NOT EXISTS idx_requests_api_key_id ON requests(api_key_id);
 
 CREATE TABLE IF NOT EXISTS api_keys (
     id          TEXT PRIMARY KEY,
@@ -44,13 +46,13 @@ INSERT INTO requests (
     cached_tokens, reasoning_tokens, latency_ms, ttft_ms,
     prompt_speed, completion_speed, total_tps, cached_ratio,
     spec_draft_tokens, spec_accepted_tokens,
-    status, error_message
+    status, error_message, api_key_id
 ) VALUES (
     :id, :model, :stream, :prompt_tokens, :completion_tokens,
     :cached_tokens, :reasoning_tokens, :latency_ms, :ttft_ms,
     :prompt_speed, :completion_speed, :total_tps, :cached_ratio,
     :spec_draft_tokens, :spec_accepted_tokens,
-    :status, :error_message
+    :status, :error_message, :api_key_id
 )
 """
 
@@ -118,6 +120,21 @@ async def get_requests_count(
         async with conn.execute(query, params) as cur:
             row = await cur.fetchone()
             return row[0]
+
+
+async def get_key_names_by_ids(db_path: str, key_ids: list[str]) -> dict[str, str]:
+    """Return {key_id: name} mapping for the given key IDs."""
+    if not key_ids:
+        return {}
+    placeholders = ",".join("?" * len(key_ids))
+    async with aiosqlite.connect(db_path) as conn:
+        conn.row_factory = aiosqlite.Row
+        async with conn.execute(
+            f"SELECT id, name FROM api_keys WHERE id IN ({placeholders})",
+            key_ids,
+        ) as cur:
+            rows = await cur.fetchall()
+            return {r["id"]: r["name"] for r in rows}
 
 
 async def get_summary(

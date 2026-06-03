@@ -13,6 +13,7 @@ from starlette.responses import JSONResponse, StreamingResponse
 
 from vllm_metrics_proxy.config import settings
 from vllm_metrics_proxy.db import insert_request
+from vllm_metrics_proxy.auth import get_api_key as _get_api_key
 from vllm_metrics_proxy.metrics import compute_metrics
 from vllm_metrics_proxy.vllm_metrics import snapshot_counters, measure_counter_deltas
 
@@ -22,15 +23,17 @@ logger = logging.getLogger(__name__)
 
 _active_requests: dict[str, dict] = {}
 _cancel_flags: set[str] = set()
+_live_streams: dict[str, httpx.Response] = {}  # request_id -> httpx Response for force-cancel
 
 
-def register_active_request(request_id: str, model: str | None, stream: bool) -> None:
+def register_active_request(request_id: str, model: str | None, stream: bool, api_key_name: str = "") -> None:
     """Register a request as active (in-flight)."""
     _active_requests[request_id] = {
         "id": request_id,
         "model": model,
         "stream": stream,
         "start_time": time.monotonic(),
+        "api_key_name": api_key_name,
     }
 
 
@@ -38,14 +41,22 @@ def unregister_active_request(request_id: str) -> None:
     """Remove a request from active tracking."""
     _active_requests.pop(request_id, None)
     _cancel_flags.discard(request_id)
+    _live_streams.pop(request_id, None)
 
 
 def cancel_active_request(request_id: str) -> bool:
-    """Mark a request for cancellation. Returns True if it was active."""
-    if request_id in _active_requests:
-        _cancel_flags.add(request_id)
-        return True
-    return False
+    """Cancel an active request by closing its upstream stream."""
+    if request_id not in _active_requests:
+        return False
+    _cancel_flags.add(request_id)
+    # Force-close the httpx stream to unblock the reader immediately
+    resp = _live_streams.pop(request_id, None)
+    if resp:
+        try:
+            resp.close()
+        except Exception:
+            pass
+    return True
 
 
 def get_active_requests() -> list[dict]:
@@ -60,15 +71,20 @@ def get_active_requests() -> list[dict]:
             "stream": info["stream"],
             "elapsed_ms": round(elapsed_ms, 0),
             "cancelled": req_id in _cancel_flags,
+            "api_key_name": info.get("api_key_name", ""),
         })
     return result
 
 
-async def proxy_request(request: Request) -> JSONResponse | StreamingResponse:
+async def proxy_request(request: Request, key_id: str | None = None) -> JSONResponse | StreamingResponse:
     """Forward a request to vLLM upstream and record metrics."""
     request_id = str(uuid.uuid4())
     start_time = time.monotonic()
     db_path = request.app.state.db_path
+
+    # Normalize sentinel — don't store when auth is disabled
+    if key_id == "__no_auth__":
+        key_id = None
 
     body = await request.body()
     content_type = request.headers.get("content-type", "application/json")
@@ -104,15 +120,22 @@ async def proxy_request(request: Request) -> JSONResponse | StreamingResponse:
     # Snapshot Prometheus counters before the request
     await snapshot_counters(settings.vllm_upstream)
 
+    # Resolve key name for active request display
+    api_key_name = ""
+    if key_id:
+        key_row = await _get_api_key(db_path, key_id)
+        if key_row:
+            api_key_name = key_row.get("name", "")
+
     # Register active request
-    register_active_request(request_id, model, stream)
+    register_active_request(request_id, model, stream, api_key_name=api_key_name)
 
     try:
         if stream:
             # Streaming: reader task handles unregister in its own finally
             return _handle_streaming(
                 request.method, upstream_url, headers, content_type, body,
-                request_id, start_time, model, db_path,
+                request_id, start_time, model, db_path, key_id,
             )
         else:
             # Non-streaming: ensure unregister always runs (success, error, exception)
@@ -120,7 +143,7 @@ async def proxy_request(request: Request) -> JSONResponse | StreamingResponse:
                 async with httpx.AsyncClient(timeout=httpx.Timeout(300.0, connect=10.0)) as client:
                     return await _handle_non_streaming(
                         client, request.method, upstream_url, headers, content_type, body,
-                        request_id, start_time, model, db_path,
+                        request_id, start_time, model, db_path, key_id,
                     )
             finally:
                 unregister_active_request(request_id)
@@ -145,6 +168,7 @@ async def _handle_non_streaming(
     start_time: float,
     model: str | None,
     db_path: str,
+    key_id: str | None = None,
 ) -> JSONResponse:
     resp = await client.request(
         method, upstream_url, content=body, headers=headers,
@@ -200,6 +224,7 @@ async def _handle_non_streaming(
         spec_accepted_tokens=spec_accepted_tokens,
     )
 
+    record["api_key_id"] = key_id
     await _save_record(record, db_path)
     return JSONResponse(status_code=200, content=data)
 
@@ -214,6 +239,7 @@ def _handle_streaming(
     start_time: float,
     model: str | None,
     db_path: str,
+    key_id: str | None = None,
 ) -> StreamingResponse:
     # Use an asyncio.Queue to decouple upstream reading from client delivery.
     # A background task reads from vLLM and puts chunks into the queue.
@@ -228,9 +254,9 @@ def _handle_streaming(
         prompt_tokens = None
         completion_tokens = None
         cached_tokens = None
-        reasoning_tokens = None
+        reasoning_tokens = 0
         ttft_ms = None
-        first_content_seen = False
+        first_output_seen = False
         was_cancelled = False
 
         try:
@@ -245,8 +271,11 @@ def _handle_streaming(
                         )
                         return
 
+                    # Register stream for force-cancel support
+                    _live_streams[request_id] = resp
+
                     async for line in resp.aiter_lines():
-                        # Check cancellation flag
+                        # Check cancellation flag (set by cancel or stream close)
                         if request_id in _cancel_flags:
                             was_cancelled = True
                             queue.put_nowait(
@@ -274,14 +303,22 @@ def _handle_streaming(
                         except json.JSONDecodeError:
                             continue
 
-                        if not first_content_seen:
+                        if not first_output_seen:
                             choices = chunk.get("choices") or []
                             for choice in choices:
                                 delta = choice.get("delta") or {}
-                                if delta.get("content"):
+                                # TTFT = first output token (reasoning OR content)
+                                if delta.get("content") or delta.get("reasoning"):
                                     ttft_ms = (time.monotonic() - start_time) * 1000.0
-                                    first_content_seen = True
+                                    first_output_seen = True
                                     break
+
+                        # Count reasoning tokens from chunks
+                        choices = chunk.get("choices") or []
+                        for choice in choices:
+                            delta = choice.get("delta") or {}
+                            if delta.get("reasoning"):
+                                reasoning_tokens += 1
 
                         usage = chunk.get("usage")
                         if usage:
@@ -289,8 +326,11 @@ def _handle_streaming(
                             completion_tokens = usage.get("completion_tokens")
                             details = usage.get("prompt_tokens_details") or {}
                             cached_tokens = details.get("cached_tokens")
+                            # vLLM may provide reasoning_tokens in details; prefer that
                             comp_details = usage.get("completion_tokens_details") or {}
-                            reasoning_tokens = comp_details.get("reasoning_tokens")
+                            api_reasoning = comp_details.get("reasoning_tokens")
+                            if api_reasoning is not None:
+                                reasoning_tokens = api_reasoning
         except Exception as exc:
             logger.error("Stream reader error [%s]: %s", request_id, exc)
             # Put a sentinel so the client-side generator can exit
@@ -333,6 +373,8 @@ def _handle_streaming(
                     spec_draft_tokens=spec_draft_tokens,
                     spec_accepted_tokens=spec_accepted_tokens,
                 )
+
+                record["api_key_id"] = key_id
 
                 if was_cancelled:
                     record["status"] = "cancelled"

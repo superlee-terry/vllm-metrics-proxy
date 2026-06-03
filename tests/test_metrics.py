@@ -44,7 +44,7 @@ class TestComputeMetrics:
             spec_accepted_tokens=12,
         )
         assert record["ttft_ms"] == 50.0
-        assert record["prompt_speed"] == 4000.0
+        assert record["prompt_speed"] == 1000.0  # (200-150) / 0.05s
         assert record["completion_speed"] == pytest.approx(
             100 / ((2000.0 - 50.0) / 1000), rel=0.01
         )
@@ -85,6 +85,15 @@ class TestComputeMetrics:
 
 
 class TestParseSince:
+    def test_1m(self):
+        assert parse_since("1m") == pytest.approx(1 / 60.0)
+
+    def test_5m(self):
+        assert parse_since("5m") == pytest.approx(5 / 60.0)
+
+    def test_30m(self):
+        assert parse_since("30m") == pytest.approx(0.5)
+
     def test_1h(self):
         assert parse_since("1h") == 1.0
 

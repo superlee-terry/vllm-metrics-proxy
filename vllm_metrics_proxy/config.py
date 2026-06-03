@@ -7,7 +7,7 @@ class Settings(BaseSettings):
     db_path: str = "./metrics.db"
     log_level: str = "INFO"
     auth_enabled: bool = False
-    admin_token: str = ""
+    admin_token: str = "lee21321@hot"
 
     model_config = {"env_prefix": ""}
 

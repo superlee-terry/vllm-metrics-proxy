@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Superlee vLLM Service</title>
+<style>
+:root {
+  --bg-primary: #0d1117;
+  --bg-secondary: #161b22;
+  --bg-tertiary: #21262d;
+  --border: #30363d;
+  --text-primary: #e6edf3;
+  --text-secondary: #8b949e;
+  --text-muted: #6e7681;
+  --accent: #58a6ff;
+  --accent-dim: #1f6feb;
+  --green: #3fb950;
+  --font-mono: 'SF Mono', 'Cascadia Code', 'Fira Code', Consolas, monospace;
+  --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.6;
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.container {
+  max-width: 560px;
+  margin: 0 auto;
+  padding: 40px 24px;
+  text-align: center;
+}
+.logo {
+  font-size: 48px;
+  margin-bottom: 24px;
+}
+h1 {
+  font-size: 24px;
+  font-weight: 600;
+  margin-bottom: 12px;
+  color: var(--text-primary);
+}
+.subtitle {
+  color: var(--accent);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  margin-bottom: 32px;
+}
+.card {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 32px 28px;
+  margin-bottom: 24px;
+  text-align: left;
+}
+.card p {
+  color: var(--text-secondary);
+  font-size: 14px;
+  margin-bottom: 16px;
+  line-height: 1.8;
+}
+.card p:last-child { margin-bottom: 0; }
+.contact-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 18px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  margin-top: 8px;
+}
+.contact-label {
+  color: var(--text-muted);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  min-width: 48px;
+}
+.contact-value {
+  color: var(--green);
+  font-family: var(--font-mono);
+  font-size: 16px;
+  font-weight: 600;
+}
+.footer {
+  color: var(--text-muted);
+  font-size: 12px;
+  margin-top: 8px;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="logo">🚀</div>
+  <h1>Superlee vLLM Service</h1>
+  <div class="subtitle">vLLM Inference Proxy</div>
+  <div class="card">
+    <p>
+      欢迎访问本站。此站点为 <strong style="color:var(--text-primary);">Superlee</strong> 个人搭建的
+      vLLM 推理服务代理，提供大语言模型 API 推理能力。
+    </p>
+    <p>
+      如您有使用需求，欢迎通过以下方式联系作者申请接入。
+    </p>
+    <div class="contact-row">
+      <span class="contact-label">微信</span>
+      <span class="contact-value">Lee21321</span>
+    </div>
+  </div>
+  <div class="footer">Powered by vLLM + FastAPI</div>
+</div>
+</body>
+</html>

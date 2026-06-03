@@ -8,7 +8,7 @@ from vllm_metrics_proxy.auth import (
     verify_admin_token,
 )
 from vllm_metrics_proxy.config import settings
-from vllm_metrics_proxy.db import get_requests, get_requests_count, get_summary, get_summary_by_model
+from vllm_metrics_proxy.db import get_requests, get_requests_count, get_key_names_by_ids, get_summary, get_summary_by_model
 from vllm_metrics_proxy.metrics import parse_since
 from vllm_metrics_proxy.gpu_stats import fetch_gpu_stats
 from vllm_metrics_proxy.vllm_metrics import fetch_engine_stats
@@ -24,6 +24,11 @@ router = APIRouter()
 
 @router.get("/")
 async def index():
+    return FileResponse("static/welcome.html")
+
+
+@router.get("/dashboard")
+async def dashboard():
     return FileResponse("static/index.html")
 
 
@@ -64,6 +69,13 @@ async def requests_list(
 
     rows = await get_requests(db_path, limit=limit, offset=offset, since_hours=since_hours)
     total = await get_requests_count(db_path, since_hours=since_hours)
+
+    # Enrich with key names
+    key_ids = [r["api_key_id"] for r in rows if r.get("api_key_id")]
+    key_names = await get_key_names_by_ids(db_path, key_ids) if key_ids else {}
+    for r in rows:
+        kid = r.get("api_key_id")
+        r["api_key_name"] = key_names.get(kid, "") if kid else ""
 
     return {
         "total": total,
@@ -111,9 +123,7 @@ async def cancel_request(request_id: str):
 @router.post("/api/keys")
 async def create_key(request: Request, _admin: None = Depends(verify_admin_token)):
     body = await request.json()
-    name = body.get("name")
-    if not name:
-        return JSONResponse(status_code=400, content={"detail": "name is required"})
+    name = body.get("name") or ""
     expires_in = body.get("expires_in")
     try:
         key = await create_api_key(request.app.state.db_path, name=name, expires_in=expires_in)
@@ -150,14 +160,15 @@ async def remove_key(request: Request, key_id: str, _admin: None = Depends(verif
 @router.patch("/api/keys/{key_id}")
 async def patch_key(request: Request, key_id: str, _admin: None = Depends(verify_admin_token)):
     body = await request.json()
+    name = body.get("name")
     enabled = body.get("enabled")
     expires_in = body.get("expires_in")
-    if enabled is None and expires_in is None:
+    if name is None and enabled is None and expires_in is None:
         return JSONResponse(status_code=400, content={"detail": "no fields to update"})
     try:
         updated = await update_api_key(
             request.app.state.db_path, key_id,
-            enabled=enabled, expires_in=expires_in,
+            name=name, enabled=enabled, expires_in=expires_in,
         )
     except ValueError as e:
         return JSONResponse(status_code=422, content={"detail": str(e)})

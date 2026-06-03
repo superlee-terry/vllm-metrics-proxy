@@ -168,7 +168,6 @@ table td {
   color: var(--text-primary);
   font-family: var(--font-mono);
   font-size: 13px;
-  white-space: nowrap;
 }
 table tr:last-child td { border-bottom: none; }
 table tr:hover td { background: rgba(88,166,255,0.04); }
@@ -198,7 +197,7 @@ table tr:hover td { background: rgba(88,166,255,0.04); }
 <div class="container">
   <div class="header">
     <h1>🔑 API Keys 管理</h1>
-    <a href="/">← 返回 Dashboard</a>
+    <a href="/dashboard">← 返回 Dashboard</a>
   </div>
 
   <!-- Auth Gate -->
@@ -219,6 +218,10 @@ table tr:hover td { background: rgba(88,166,255,0.04); }
       <div style="flex:1;">
         <div style="color:var(--text-secondary);font-size:12px;margin-bottom:4px;">Key 名称（可选）</div>
         <input type="text" id="keyNameInput" placeholder="如: frontend-app、prod-service" maxlength="64" style="width:100%;box-sizing:border-box;background:var(--bg-tertiary);border:1px solid var(--border);color:var(--text-primary);padding:8px 12px;border-radius:6px;font-size:14px;font-family:var(--font-sans);outline:none;">
+      </div>
+      <div style="width:160px;">
+        <div style="color:var(--text-secondary);font-size:12px;margin-bottom:4px;">有效期（可选）</div>
+        <input type="text" id="keyExpiryInput" placeholder="如: 30d、7d、1h" maxlength="16" style="width:100%;box-sizing:border-box;background:var(--bg-tertiary);border:1px solid var(--border);color:var(--text-primary);padding:8px 12px;border-radius:6px;font-size:14px;font-family:var(--font-mono);outline:none;">
       </div>
       <button class="btn" onclick="createKey()">+ 创建 Key</button>
     </div>
@@ -275,6 +278,18 @@ table tr:hover td { background: rgba(88,166,255,0.04); }
           <div style="display:flex;gap:10px;justify-content:flex-end;">
             <button class="btn-sm" onclick="closeRenameModal()">取消</button>
             <button class="btn" onclick="confirmRename()" style="padding:5px 16px;">保存</button>
+          </div>
+        </div>
+      </div>
+      <!-- Expiry Modal -->
+      <div id="expiryModal" class="hidden" style="position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.6);z-index:100;display:flex;align-items:center;justify-content:center;">
+        <div style="background:var(--bg-secondary);border:1px solid var(--border);border-radius:8px;padding:24px;max-width:400px;width:90%;">
+          <div style="color:var(--accent);font-size:13px;font-weight:600;margin-bottom:12px;">修改有效期</div>
+          <div id="expiryCurrent" style="color:var(--text-secondary);font-size:12px;margin-bottom:12px;"></div>
+          <input type="text" id="expiryInput" placeholder="如: 30d、7d、1h（留空则永不过期）" maxlength="16" style="width:100%;box-sizing:border-box;background:var(--bg-tertiary);border:1px solid var(--border);color:var(--text-primary);padding:8px 12px;border-radius:6px;font-size:14px;font-family:var(--font-mono);outline:none;margin-bottom:16px;">
+          <div style="display:flex;gap:10px;justify-content:flex-end;">
+            <button class="btn-sm" onclick="closeExpiryModal()">取消</button>
+            <button class="btn" onclick="confirmExpiry()" style="padding:5px 16px;">保存</button>
           </div>
         </div>
       </div>
@@ -347,8 +362,10 @@ table tr:hover td { background: rgba(88,166,255,0.04); }
   window.createKey = async function() {
     try {
       var name = document.getElementById('keyNameInput').value.trim();
+      var expires = document.getElementById('keyExpiryInput').value.trim();
       var body = {};
       if (name) body.name = name;
+      if (expires) body.expires_in = expires;
       var resp = await apiFetch('/api/keys', {
         method: 'POST',
         headers: apiHeaders(),
@@ -363,6 +380,7 @@ table tr:hover td { background: rgba(88,166,255,0.04); }
       keyRevealCodeEl.textContent = data.id;
       keyRevealEl.classList.remove('hidden');
       document.getElementById('keyNameInput').value = '';
+      document.getElementById('keyExpiryInput').value = '';
       refreshKeys();
     } catch (e) {
       if (e.message !== 'Admin token invalid') alert('创建失败: ' + e.message);
@@ -495,6 +513,41 @@ table tr:hover td { background: rgba(88,166,255,0.04); }
     });
   };
 
+  var expiryKeyId = null;
+  window.showExpiryModal = function(maskedId, currentExpiredAt) {
+    expiryKeyId = keyMaskToId[maskedId];
+    if (!expiryKeyId) return;
+    document.getElementById('expiryCurrent').textContent = '当前有效期: ' + (currentExpiredAt ? currentExpiredAt : '永不过期');
+    document.getElementById('expiryInput').value = '';
+    document.getElementById('expiryModal').classList.remove('hidden');
+    document.getElementById('expiryInput').focus();
+    document.getElementById('expiryInput').addEventListener('keydown', function(e) { if (e.key === 'Enter') confirmExpiry(); });
+  };
+
+  window.closeExpiryModal = function() {
+    document.getElementById('expiryModal').classList.add('hidden');
+  };
+
+  window.confirmExpiry = async function() {
+    var val = document.getElementById('expiryInput').value.trim();
+    try {
+      var resp = await apiFetch('/api/keys/' + encodeURIComponent(expiryKeyId), {
+        method: 'PATCH',
+        headers: apiHeaders(),
+        body: JSON.stringify({ expires_in: val || null }),
+      });
+      if (!resp.ok) {
+        var data = await resp.json().catch(function() { return {}; });
+        alert('修改失败: ' + (data.detail || resp.status));
+        return;
+      }
+      closeExpiryModal();
+      refreshKeys();
+    } catch (e) {
+      if (e.message !== 'Admin token invalid') alert('修改失败: ' + e.message);
+    }
+  };
+
   async function refreshKeys() {
     try {
       var resp = await fetch('/api/keys');
@@ -520,7 +573,8 @@ table tr:hover td { background: rgba(88,166,255,0.04); }
           + '<td><span class="' + st.cls + '">' + st.label + '</span></td>'
           + '<td>'
           +   '<button class="btn-sm" onclick="showCopyModal(\'' + escapeHtml(k.masked_id) + '\')">复制</button> '
-          +   '<button class="btn-sm" onclick="showRenameModal(\'' + escapeHtml(k.masked_id) + '\',' + escapeHtml(k.name) + '\')">改名</button> '
+          +   '<button class="btn-sm" onclick="showRenameModal(\'' + escapeHtml(k.masked_id) + '\',\'' + escapeHtml(k.name).replace(/'/g, "\\'") + '\')">改名</button> '
+          +   '<button class="btn-sm" onclick="showExpiryModal(\'' + escapeHtml(k.masked_id) + '\',\'' + escapeHtml(k.expired_at || '').replace(/'/g, "\\'") + '\')">有效期</button> '
           +   '<button class="btn-danger" onclick="toggleKey(\'' + escapeHtml(k.masked_id) + '\',' + !k.enabled + ')">' + toggleLabel + '</button> '
           +   '<button class="btn-danger" onclick="deleteKey(\'' + escapeHtml(k.masked_id) + '\')">删除</button>'
           + '</td>'

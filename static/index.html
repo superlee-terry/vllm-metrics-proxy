@@ -356,6 +356,45 @@ table tr:hover td { background: rgba(88, 166, 255, 0.04); }
 .connection-dot.error { background: var(--red); }
 .connection-dot.loading { background: var(--yellow); }
 
+/* Auth Gate */
+.auth-gate {
+  max-width: 400px;
+  margin: 80px auto;
+  text-align: center;
+}
+.auth-gate h2 { font-size: 18px; margin-bottom: 16px; }
+.auth-gate p { color: var(--text-secondary); margin-bottom: 20px; font-size: 13px; }
+.auth-form {
+  display: flex;
+  gap: 10px;
+  justify-content: center;
+}
+.auth-form input {
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  color: var(--text-primary);
+  padding: 10px 16px;
+  border-radius: 6px;
+  font-size: 14px;
+  font-family: var(--font-mono);
+  outline: none;
+  flex: 1;
+}
+.auth-form input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(31,111,235,0.3); }
+.btn {
+  background: var(--green);
+  color: #fff;
+  border: none;
+  padding: 10px 24px;
+  border-radius: 6px;
+  font-size: 14px;
+  font-family: var(--font-sans);
+  font-weight: 500;
+  cursor: pointer;
+  transition: opacity 0.2s;
+}
+.btn:hover { opacity: 0.85; }
+
 /* Responsive */
 @media (max-width: 1100px) {
   .summary-grid, .engine-grid { grid-template-columns: repeat(3, 1fr); }
@@ -366,11 +405,24 @@ table tr:hover td { background: rgba(88, 166, 255, 0.04); }
   .gpu-grid { grid-template-columns: 1fr !important; }
   .header { flex-direction: column; align-items: flex-start; gap: 12px; }
 }
+.hidden { display: none !important; }
 </style>
 </head>
 <body>
 <div class="container">
-  <!-- Header -->
+  <!-- Auth Gate -->
+  <div class="auth-gate" id="authGate">
+    <h2>请输入管理口令</h2>
+    <p>Dashboard 需要管理员口令才能访问</p>
+    <div class="auth-form">
+      <input type="password" id="adminTokenInput" placeholder="管理口令" autofocus>
+      <button class="btn" onclick="unlockDashboard()">验证</button>
+    </div>
+    <p id="authError" class="hidden" style="color:var(--red);margin-top:12px;font-size:13px;"></p>
+  </div>
+
+  <!-- Dashboard Content (hidden until auth) -->
+  <div id="dashPanel" class="hidden">
   <div class="header">
     <h1><span class="connection-dot loading" id="connDot"></span>vLLM Metrics Proxy</h1>
     <div class="header-controls">
@@ -446,6 +498,7 @@ table tr:hover td { background: rgba(88, 166, 255, 0.04); }
         <thead>
           <tr>
             <th>请求 ID</th>
+            <th>Key</th>
             <th>Model</th>
             <th>类型</th>
             <th>已用时间</th>
@@ -494,6 +547,7 @@ table tr:hover td { background: rgba(88, 166, 255, 0.04); }
         <thead>
           <tr>
             <th>时间</th>
+            <th>Key</th>
             <th>Model</th>
             <th>输入</th>
             <th>缓存</th>
@@ -507,7 +561,7 @@ table tr:hover td { background: rgba(88, 166, 255, 0.04); }
           </tr>
         </thead>
         <tbody id="reqTbody">
-          <tr><td colspan="11" class="empty-state">加载中...</td></tr>
+          <tr><td colspan="12" class="empty-state">加载中...</td></tr>
         </tbody>
       </table>
       <div class="load-more-bar" id="loadMoreBar" style="display:none;">
@@ -515,11 +569,46 @@ table tr:hover td { background: rgba(88, 166, 255, 0.04); }
       </div>
     </div>
   </div>
+  </div><!-- end dashPanel -->
 </div>
 
 <script>
 (function() {
   'use strict';
+
+  // ---- Auth ----
+  var dashboardToken = '';
+
+  window.unlockDashboard = function() {
+    var token = document.getElementById('adminTokenInput').value.trim();
+    if (!token) return;
+    dashboardToken = token;
+    // Verify token by hitting an admin-protected endpoint
+    fetch('/api/keys', { headers: { 'X-Admin-Token': token } }).then(function(resp) {
+      if (resp.status === 403) {
+        document.getElementById('authError').textContent = '口令无效，请重新输入';
+        document.getElementById('authError').classList.remove('hidden');
+        dashboardToken = '';
+        return;
+      }
+      document.getElementById('authGate').classList.add('hidden');
+      document.getElementById('dashPanel').classList.remove('hidden');
+      initDashboard();
+    }).catch(function() {
+      document.getElementById('authError').textContent = '验证失败';
+      dashboardToken = '';
+    });
+  };
+
+  document.getElementById('adminTokenInput').addEventListener('keydown', function(e) {
+    if (e.key === 'Enter') unlockDashboard();
+  });
+
+  function authHeaders() {
+    var h = { 'Content-Type': 'application/json' };
+    if (dashboardToken) h['X-Admin-Token'] = dashboardToken;
+    return h;
+  }
 
   // State
   var currentSince = '1m';
@@ -607,7 +696,18 @@ table tr:hover td { background: rgba(88, 166, 255, 0.04); }
   // --- Fetch helpers ---
 
   async function fetchJSON(url) {
-    var resp = await fetch(url);
+    var resp = await fetch(url, { headers: authHeaders() });
+    if (resp.status === 403) {
+      // Token invalid — kick back to auth gate
+      dashboardToken = '';
+      document.getElementById('dashPanel').classList.add('hidden');
+      document.getElementById('authGate').classList.remove('hidden');
+      document.getElementById('adminTokenInput').value = '';
+      document.getElementById('authError').textContent = '口令已失效，请重新输入';
+      document.getElementById('authError').classList.remove('hidden');
+      stopPolling();
+      throw new Error('Auth expired');
+    }
     if (!resp.ok) throw new Error('HTTP ' + resp.status);
     return resp.json();
   }
@@ -700,7 +800,7 @@ table tr:hover td { background: rgba(88, 166, 255, 0.04); }
     if (!append) { reqTbody.innerHTML = ''; }
 
     if (!requests || requests.length === 0 && !append) {
-      reqTbody.innerHTML = '<tr><td colspan="11" class="empty-state">暂无数据</td></tr>';
+      reqTbody.innerHTML = '<tr><td colspan="12" class="empty-state">暂无数据</td></tr>';
       return;
     }
 
@@ -735,6 +835,7 @@ table tr:hover td { background: rgba(88, 166, 255, 0.04); }
 
       html += '<tr>'
         + '<td class="time-col">' + formatTime(r.created_at) + '</td>'
+        + '<td style="color:var(--accent);font-size:12px;">' + escapeHtml(r.api_key_name || '--') + '</td>'
         + '<td class="model-name" title="' + escapeHtml(r.model) + '">' + escapeHtml(truncateModel(r.model, 14)) + '</td>'
         + '<td>' + (r.prompt_tokens != null ? r.prompt_tokens : '--') + '</td>'
         + '<td>' + cacheHtml + '</td>'
@@ -889,6 +990,7 @@ table tr:hover td { background: rgba(88, 166, 255, 0.04); }
 
       html += '<tr>'
         + '<td class="active-id" title="' + escapeHtml(r.id) + '">' + escapeHtml(shortId) + '</td>'
+        + '<td style="color:var(--accent);font-size:12px;">' + escapeHtml(r.api_key_name || '--') + '</td>'
         + '<td class="model-name">' + escapeHtml(truncateModel(r.model, 16)) + '</td>'
         + '<td>' + typeBadge + '</td>'
         + '<td>' + formatMs(r.elapsed_ms) + '</td>'
@@ -956,18 +1058,23 @@ table tr:hover td { background: rgba(88, 166, 255, 0.04); }
     gpuPollTimer = setInterval(refreshGpuStats, 4000);
   }
 
-  // --- Event listeners ---
+  function stopPolling() {
+    if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+    if (activePollTimer) { clearInterval(activePollTimer); activePollTimer = null; }
+    if (gpuPollTimer) { clearInterval(gpuPollTimer); gpuPollTimer = null; }
+  }
 
-  timeRangeSel.addEventListener('change', function() {
-    currentSince = this.value;
+  // --- Init (called after auth) ---
+
+  function initDashboard() {
+    timeRangeSel.addEventListener('change', function() {
+      currentSince = this.value;
+      refresh();
+    });
     refresh();
-  });
-
-  // --- Init ---
-
-  refresh();
-  refreshGpuStats();
-  startPolling();
+    refreshGpuStats();
+    startPolling();
+  }
 })();
 </script>
 </body>

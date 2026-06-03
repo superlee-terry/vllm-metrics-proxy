@@ -30,6 +30,7 @@ async def app_with_data(tmp_path):
             "spec_accepted_tokens": 12,
             "status": "success",
             "error_message": None,
+            "api_key_id": None,
         })
     return app, db_path
 

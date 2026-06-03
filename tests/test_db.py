@@ -41,6 +41,7 @@ async def test_insert_and_retrieve_request(db_path):
         "spec_accepted_tokens": 12,
         "status": "success",
         "error_message": None,
+        "api_key_id": None,
     }
     await insert_request(db_path, record)
 
@@ -71,6 +72,7 @@ async def test_get_summary(db_path):
             "spec_accepted_tokens": 12,
             "status": "success",
             "error_message": None,
+            "api_key_id": None,
         })
     summary = await get_summary(db_path, since_hours=1)
     assert summary["total_requests"] == 3

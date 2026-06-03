@@ -24,7 +24,13 @@ def compute_metrics(
 
     prompt_speed = None
     if ttft_ms and ttft_ms > 0 and prompt_tokens:
-        prompt_speed = prompt_tokens / (ttft_ms / 1000.0)
+        # Cached tokens are read from KV cache, not actually prefilled.
+        # Real prefill work = prompt_tokens - cached_tokens.
+        actual_prefill = prompt_tokens
+        if cached_tokens and cached_tokens > 0:
+            actual_prefill = prompt_tokens - cached_tokens
+        if actual_prefill > 0:
+            prompt_speed = actual_prefill / (ttft_ms / 1000.0)
 
     completion_speed = None
     if ttft_ms and latency_ms and completion_tokens:
@@ -61,7 +67,7 @@ def compute_metrics(
     }
 
 
-_SINCE_PATTERN = re.compile(r"^(\d+(?:\.\d+)?)(h|d)$")
+_SINCE_PATTERN = re.compile(r"^(\d+(?:\.\d+)?)(m|h|d)$")
 
 
 def parse_since(value: str) -> float | None:
@@ -73,4 +79,6 @@ def parse_since(value: str) -> float | None:
         return None
     num = float(m.group(1))
     unit = m.group(2)
+    if unit == "m":
+        return num / 60.0
     return num if unit == "h" else num * 24.0
