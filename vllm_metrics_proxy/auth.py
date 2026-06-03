@@ -102,12 +102,17 @@ async def delete_api_key(db_path: str, key_id: str) -> bool:
 async def update_api_key(
     db_path: str, key_id: str,
     *,
+    name: str | None = None,
     enabled: bool | None = None,
     expires_in: str | None = None,
 ) -> bool:
-    """Update an API key's enabled status and/or expiry. Returns True if updated."""
+    """Update an API key's name, enabled status, and/or expiry. Returns True if updated."""
     fields: list[str] = []
     params: list = []
+
+    if name is not None:
+        fields.append("name = ?")
+        params.append(name)
 
     if enabled is not None:
         fields.append("enabled = ?")

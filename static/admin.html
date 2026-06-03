@@ -214,6 +214,15 @@ table tr:hover td { background: rgba(88,166,255,0.04); }
 
   <!-- Key Management (hidden until auth) -->
   <div id="keyPanel" class="hidden">
+    <!-- Create Form -->
+    <div style="display:flex;gap:10px;align-items:flex-end;margin-bottom:20px;">
+      <div style="flex:1;">
+        <div style="color:var(--text-secondary);font-size:12px;margin-bottom:4px;">Key 名称（可选）</div>
+        <input type="text" id="keyNameInput" placeholder="如: frontend-app、prod-service" maxlength="64" style="width:100%;box-sizing:border-box;background:var(--bg-tertiary);border:1px solid var(--border);color:var(--text-primary);padding:8px 12px;border-radius:6px;font-size:14px;font-family:var(--font-sans);outline:none;">
+      </div>
+      <button class="btn" onclick="createKey()">+ 创建 Key</button>
+    </div>
+
     <!-- Key Reveal -->
     <div class="key-reveal hidden" id="keyReveal">
       <div class="key-reveal-label">新 Key 已生成</div>
@@ -227,10 +236,7 @@ table tr:hover td { background: rgba(88,166,255,0.04); }
     <!-- Toolbar -->
     <div class="toolbar">
       <span class="toolbar-title">已创建的 Key</span>
-      <div style="display:flex;align-items:center;gap:12px;">
-        <span class="toolbar-badge" id="keysCount">0</span>
-        <button class="btn" onclick="createKey()">+ 创建 Key</button>
-      </div>
+      <span class="toolbar-badge" id="keysCount">0</span>
     </div>
 
     <!-- Table -->
@@ -258,6 +264,17 @@ table tr:hover td { background: rgba(88,166,255,0.04); }
           <div style="display:flex;gap:10px;justify-content:flex-end;">
             <button class="btn-sm" onclick="closeCopyModal()">关闭</button>
             <button class="btn" onclick="copyFullKey()" style="padding:5px 16px;">复制</button>
+          </div>
+        </div>
+      </div>
+      <!-- Rename Modal -->
+      <div id="renameModal" class="hidden" style="position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.6);z-index:100;display:flex;align-items:center;justify-content:center;">
+        <div style="background:var(--bg-secondary);border:1px solid var(--border);border-radius:8px;padding:24px;max-width:400px;width:90%;">
+          <div style="color:var(--accent);font-size:13px;font-weight:600;margin-bottom:12px;">修改名称</div>
+          <input type="text" id="renameInput" maxlength="64" style="width:100%;box-sizing:border-box;background:var(--bg-tertiary);border:1px solid var(--border);color:var(--text-primary);padding:8px 12px;border-radius:6px;font-size:14px;font-family:var(--font-sans);outline:none;margin-bottom:16px;">
+          <div style="display:flex;gap:10px;justify-content:flex-end;">
+            <button class="btn-sm" onclick="closeRenameModal()">取消</button>
+            <button class="btn" onclick="confirmRename()" style="padding:5px 16px;">保存</button>
           </div>
         </div>
       </div>
@@ -329,10 +346,13 @@ table tr:hover td { background: rgba(88,166,255,0.04); }
 
   window.createKey = async function() {
     try {
+      var name = document.getElementById('keyNameInput').value.trim();
+      var body = {};
+      if (name) body.name = name;
       var resp = await apiFetch('/api/keys', {
         method: 'POST',
         headers: apiHeaders(),
-        body: JSON.stringify({ name: 'auto-' + Date.now().toString(36) }),
+        body: JSON.stringify(body),
       });
       var data = await resp.json();
       if (!resp.ok) {
@@ -342,6 +362,7 @@ table tr:hover td { background: rgba(88,166,255,0.04); }
       revealedKey = data.id;
       keyRevealCodeEl.textContent = data.id;
       keyRevealEl.classList.remove('hidden');
+      document.getElementById('keyNameInput').value = '';
       refreshKeys();
     } catch (e) {
       if (e.message !== 'Admin token invalid') alert('创建失败: ' + e.message);
@@ -433,6 +454,40 @@ table tr:hover td { background: rgba(88,166,255,0.04); }
     document.getElementById('copyModal').classList.add('hidden');
   };
 
+  var renameKeyId = null;
+  window.showRenameModal = function(maskedId, currentName) {
+    renameKeyId = keyMaskToId[maskedId];
+    if (!renameKeyId) return;
+    document.getElementById('renameInput').value = currentName;
+    document.getElementById('renameModal').classList.remove('hidden');
+    document.getElementById('renameInput').focus();
+    document.getElementById('renameInput').addEventListener('keydown', function(e) { if (e.key === 'Enter') confirmRename(); });
+  };
+
+  window.closeRenameModal = function() {
+    document.getElementById('renameModal').classList.add('hidden');
+  };
+
+  window.confirmRename = async function() {
+    var newName = document.getElementById('renameInput').value.trim();
+    if (!newName) { alert('名称不能为空'); return; }
+    try {
+      var resp = await apiFetch('/api/keys/' + encodeURIComponent(renameKeyId), {
+        method: 'PATCH',
+        headers: apiHeaders(),
+        body: JSON.stringify({ name: newName }),
+      });
+      if (!resp.ok) {
+        alert('修改失败: ' + (resp.status || 'unknown'));
+        return;
+      }
+      closeRenameModal();
+      refreshKeys();
+    } catch (e) {
+      if (e.message !== 'Admin token invalid') alert('修改失败: ' + e.message);
+    }
+  };
+
   window.copyFullKey = function() {
     if (!fullKeyForCopy) return;
     navigator.clipboard.writeText(fullKeyForCopy).then(function() {
@@ -465,6 +520,7 @@ table tr:hover td { background: rgba(88,166,255,0.04); }
           + '<td><span class="' + st.cls + '">' + st.label + '</span></td>'
           + '<td>'
           +   '<button class="btn-sm" onclick="showCopyModal(\'' + escapeHtml(k.masked_id) + '\')">复制</button> '
+          +   '<button class="btn-sm" onclick="showRenameModal(\'' + escapeHtml(k.masked_id) + '\',' + escapeHtml(k.name) + '\')">改名</button> '
           +   '<button class="btn-danger" onclick="toggleKey(\'' + escapeHtml(k.masked_id) + '\',' + !k.enabled + ')">' + toggleLabel + '</button> '
           +   '<button class="btn-danger" onclick="deleteKey(\'' + escapeHtml(k.masked_id) + '\')">删除</button>'
           + '</td>'

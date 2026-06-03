@@ -284,7 +284,7 @@ async def app_with_keys(tmp_path):
     """App with DB initialized for key management tests."""
     db_path = str(tmp_path / "test.db")
     await init_db(db_path)
-    app = create_app(db_path=db_path)
+    app = create_app(db_path=db_path, settings_override=Settings(admin_token=""))
     return app, db_path
 
 
