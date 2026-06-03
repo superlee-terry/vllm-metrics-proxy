@@ -275,3 +275,105 @@ async def test_dashboard_no_auth_required(app_with_auth):
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         resp = await client.get("/api/health")
     assert resp.status_code == 200
+
+
+# ---- Key management API tests ----
+
+@pytest_asyncio.fixture
+async def app_with_keys(tmp_path):
+    """App with DB initialized for key management tests."""
+    db_path = str(tmp_path / "test.db")
+    await init_db(db_path)
+    app = create_app(db_path=db_path)
+    return app, db_path
+
+
+@pytest.mark.asyncio
+async def test_create_key_api(app_with_keys):
+    app, _ = app_with_keys
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post("/api/keys", json={"name": "my-app"})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["name"] == "my-app"
+    assert data["expired_at"] is None
+    assert "id" in data
+    import uuid
+    uuid.UUID(data["id"])
+
+
+@pytest.mark.asyncio
+async def test_create_key_api_with_expiry(app_with_keys):
+    app, _ = app_with_keys
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post("/api/keys", json={"name": "temp", "expires_in": "7d"})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["expired_at"] is not None
+
+
+@pytest.mark.asyncio
+async def test_create_key_api_invalid_expiry(app_with_keys):
+    app, _ = app_with_keys
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post("/api/keys", json={"name": "bad", "expires_in": "xyz"})
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_list_keys_api(app_with_keys):
+    app, _ = app_with_keys
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        await client.post("/api/keys", json={"name": "key-a"})
+        await client.post("/api/keys", json={"name": "key-b"})
+        resp = await client.get("/api/keys")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data["keys"]) == 2
+    for k in data["keys"]:
+        assert "masked_id" in k
+
+
+@pytest.mark.asyncio
+async def test_delete_key_api(app_with_keys):
+    app, _ = app_with_keys
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        created = (await client.post("/api/keys", json={"name": "del-me"})).json()
+        resp = await client.delete(f"/api/keys/{created['id']}")
+    assert resp.status_code == 200
+
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get("/api/keys")
+    assert len(resp.json()["keys"]) == 0
+
+
+@pytest.mark.asyncio
+async def test_delete_key_api_not_found(app_with_keys):
+    app, _ = app_with_keys
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.delete("/api/keys/nonexistent-id")
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_update_key_api_disable_enable(app_with_keys):
+    app, _ = app_with_keys
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        created = (await client.post("/api/keys", json={"name": "toggle"})).json()
+        # Disable
+        resp = await client.patch(f"/api/keys/{created['id']}", json={"enabled": False})
+        assert resp.status_code == 200
+        keys = (await client.get("/api/keys")).json()
+        assert keys["keys"][0]["enabled"] == 0
+        # Re-enable
+        resp = await client.patch(f"/api/keys/{created['id']}", json={"enabled": True})
+        assert resp.status_code == 200
+        keys = (await client.get("/api/keys")).json()
+        assert keys["keys"][0]["enabled"] == 1
