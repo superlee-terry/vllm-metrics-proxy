@@ -1,13 +1,14 @@
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, Request
 from starlette.responses import JSONResponse, Response, StreamingResponse
 
+from vllm_metrics_proxy.auth import verify_api_key
 from vllm_metrics_proxy.proxy import proxy_request
 
 router = APIRouter()
 
 
 @router.api_route("/v1/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"], response_model=None)
-async def forward_v1(request: Request):
+async def forward_v1(request: Request, key_id: str = Depends(verify_api_key)):
     return await proxy_request(request)
 
 

@@ -5,8 +5,8 @@ import uuid
 from datetime import datetime, timedelta, timezone
 
 import aiosqlite
-
-from vllm_metrics_proxy.config import settings
+from fastapi import HTTPException
+from starlette.requests import Request
 
 
 # ---- Key masking ----
@@ -153,10 +153,7 @@ async def verify_api_key(request: Request) -> str:
     Returns key_id on success, raises HTTPException on failure.
     When auth_enabled is False, returns a sentinel value (skip auth).
     """
-    from fastapi import HTTPException
-    from starlette.requests import Request  # noqa: F811
-
-    if not settings.auth_enabled:
+    if not request.app.state.settings.auth_enabled:
         return _NO_AUTH_SENTINEL
 
     key_id = _extract_key_from_headers(dict(request.headers))
