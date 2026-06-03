@@ -142,6 +142,66 @@ body {
 .engine-card .value.awake { color: var(--green); }
 .engine-card .value.sleeping { color: var(--yellow); }
 
+/* GPU Cards */
+.gpu-grid {
+  display: grid;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.gpu-card {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--card-radius);
+  padding: 10px 14px;
+  transition: border-color 0.2s;
+}
+
+.gpu-card:hover { border-color: var(--accent-dim); }
+
+.gpu-card .gpu-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 6px;
+}
+
+.gpu-card .label {
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.gpu-card .gpu-name {
+  color: var(--accent);
+  font-size: 12px;
+  font-family: var(--font-mono);
+}
+
+.gpu-card .gpu-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 1px 0;
+}
+
+.gpu-card .gpu-metric-label {
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.gpu-card .gpu-metric-value {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.gpu-temp-normal { color: var(--green); }
+.gpu-temp-warm { color: var(--yellow); }
+.gpu-temp-hot { color: var(--red); }
+
 /* Section */
 .section { margin-bottom: 24px; }
 
@@ -297,11 +357,98 @@ table tr:hover td { background: rgba(88, 166, 255, 0.04); }
 .connection-dot.loading { background: var(--yellow); }
 
 /* Responsive */
+/* API Keys Management */
+.keys-form {
+  display: flex;
+  gap: 10px;
+  align-items: flex-end;
+  margin-bottom: 12px;
+}
+
+.keys-form input, .keys-form select {
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  color: var(--text-primary);
+  padding: 6px 12px;
+  border-radius: 6px;
+  font-size: 13px;
+  font-family: var(--font-sans);
+  outline: none;
+}
+
+.keys-form input:focus, .keys-form select:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(31, 111, 235, 0.3);
+}
+
+.keys-form input { flex: 1; min-width: 160px; }
+
+.create-btn {
+  background: var(--green);
+  color: #fff;
+  border: none;
+  padding: 6px 16px;
+  border-radius: 6px;
+  font-size: 13px;
+  font-family: var(--font-sans);
+  font-weight: 500;
+  cursor: pointer;
+  transition: opacity 0.2s;
+  white-space: nowrap;
+}
+.create-btn:hover { opacity: 0.85; }
+
+.key-reveal {
+  background: var(--bg-tertiary);
+  border: 1px solid var(--green);
+  border-radius: 6px;
+  padding: 12px 16px;
+  margin-bottom: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.key-reveal-code {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--green);
+  word-break: break-all;
+  flex: 1;
+}
+
+.key-reveal-hint {
+  color: var(--text-secondary);
+  font-size: 12px;
+  margin-top: 4px;
+}
+
+.key-action-btn {
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  padding: 3px 10px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-family: var(--font-sans);
+  cursor: pointer;
+  transition: all 0.2s;
+}
+.key-action-btn:hover { background: var(--bg-tertiary); color: var(--text-primary); }
+.key-action-btn.danger:hover { border-color: var(--red); color: var(--red); }
+
+.key-enabled { color: var(--green); font-weight: 600; }
+.key-disabled { color: var(--red); font-weight: 600; }
+.key-expired { color: var(--yellow); font-weight: 600; }
+
 @media (max-width: 1100px) {
   .summary-grid, .engine-grid { grid-template-columns: repeat(3, 1fr); }
+  .gpu-grid { grid-template-columns: repeat(2, 1fr) !important; }
 }
 @media (max-width: 700px) {
   .summary-grid, .engine-grid { grid-template-columns: repeat(2, 1fr); }
+  .gpu-grid { grid-template-columns: 1fr !important; }
   .header { flex-direction: column; align-items: flex-start; gap: 12px; }
 }
 </style>
@@ -314,14 +461,16 @@ table tr:hover td { background: rgba(88, 166, 255, 0.04); }
     <div class="header-controls">
       <label for="timeRange">时间范围:</label>
       <select class="time-select" id="timeRange">
-        <option value="1h" selected>1h</option>
-        <option value="6h">6h</option>
-        <option value="24h">24h</option>
-        <option value="7d">7d</option>
-        <option value="all">all</option>
+        <option value="1m" selected>1 分钟</option>
+        <option value="5m">5 分钟</option>
+        <option value="30m">30 分钟</option>
+        <option value="1h">1 小时</option>
       </select>
     </div>
   </div>
+
+  <!-- GPU Stats (nvidia-smi) -->
+  <div id="gpuGrid" class="gpu-grid" style="display:none;"></div>
 
   <!-- Summary Cards (per-request averages) -->
   <div class="summary-grid">
@@ -395,6 +544,50 @@ table tr:hover td { background: rgba(88, 166, 255, 0.04); }
     </div>
   </div>
 
+  <!-- API Keys Management -->
+  <div class="section" id="keysSection">
+    <div class="section-header">
+      <span class="section-title">API Keys</span>
+      <span class="section-badge" id="keysCount">0</span>
+    </div>
+    <div class="keys-form">
+      <input type="text" id="keyNameInput" placeholder="Key 名称 (如 frontend-app)" maxlength="64">
+      <select id="keyExpirySelect">
+        <option value="">永不过期</option>
+        <option value="1h">1 小时</option>
+        <option value="24h">24 小时</option>
+        <option value="7d">7 天</option>
+        <option value="30d">30 天</option>
+        <option value="90d">90 天</option>
+      </select>
+      <button class="create-btn" onclick="createKey()">创建 Key</button>
+    </div>
+    <div class="key-reveal" id="keyReveal" style="display:none;">
+      <div>
+        <div class="key-reveal-code" id="keyRevealCode"></div>
+        <div class="key-reveal-hint">请立即复制，此 Key 只显示一次</div>
+      </div>
+      <button class="key-action-btn" onclick="copyRevealedKey()">复制</button>
+    </div>
+    <div class="requests-table-wrapper">
+      <table>
+        <thead>
+          <tr>
+            <th>Key ID</th>
+            <th>名称</th>
+            <th>创建时间</th>
+            <th>过期时间</th>
+            <th>状态</th>
+            <th>操作</th>
+          </tr>
+        </thead>
+        <tbody id="keysTbody">
+          <tr><td colspan="6" class="empty-state">加载中...</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
   <!-- Model Breakdown -->
   <div class="section">
     <div class="section-header">
@@ -435,7 +628,7 @@ table tr:hover td { background: rgba(88, 166, 255, 0.04); }
             <th>缓存</th>
             <th>Prefill T/s</th>
             <th>TTFT</th>
-            <th>输出</th>
+            <th>输出 <span class="na" title="括号内为推理(Thinking)Token">(T=推理)</span></th>
             <th>Decode T/s</th>
             <th>草稿接受</th>
             <th>耗时</th>
@@ -458,9 +651,9 @@ table tr:hover td { background: rgba(88, 166, 255, 0.04); }
   'use strict';
 
   // State
-  var currentSince = '1h';
+  var currentSince = '1m';
   var reqOffset = 0;
-  var reqLimit = 50;
+  var reqLimit = 25;
   var reqTotal = 0;
   var pollTimer = null;
 
@@ -508,6 +701,15 @@ table tr:hover td { background: rgba(88, 166, 255, 0.04); }
   function formatTps(n) {
     if (n == null) return '--';
     return n.toFixed(1) + ' tok/s';
+  }
+
+  function formatOutputTokens(r) {
+    if (r.completion_tokens == null) return '--';
+    if (r.reasoning_tokens && r.reasoning_tokens > 0) {
+      var content = r.completion_tokens - r.reasoning_tokens;
+      return r.completion_tokens + ' <span class="na">(' + r.reasoning_tokens + 'T)</span>';
+    }
+    return String(r.completion_tokens);
   }
 
   function formatTime(isoStr) {
@@ -667,7 +869,7 @@ table tr:hover td { background: rgba(88, 166, 255, 0.04); }
         + '<td>' + cacheHtml + '</td>'
         + '<td>' + formatTps(r.prompt_speed) + '</td>'
         + '<td>' + formatMs(r.ttft_ms) + '</td>'
-        + '<td>' + (r.completion_tokens != null ? r.completion_tokens : '--') + '</td>'
+        + '<td>' + formatOutputTokens(r) + '</td>'
         + '<td>' + formatTps(r.completion_speed) + '</td>'
         + '<td>' + specHtml + '</td>'
         + '<td>' + formatMs(r.latency_ms) + '</td>'
@@ -723,6 +925,69 @@ table tr:hover td { background: rgba(88, 166, 255, 0.04); }
       .replace(/"/g, '&quot;');
   }
 
+  // --- GPU stats ---
+
+  var gpuGridEl = document.getElementById('gpuGrid');
+  var gpuPollTimer = null;
+
+  function formatMem(mb) {
+    if (mb >= 1024) return (mb / 1024).toFixed(1) + ' GiB';
+    return mb + ' MiB';
+  }
+
+  function tempClass(temp) {
+    if (temp <= 50) return 'gpu-temp-normal';
+    if (temp <= 75) return 'gpu-temp-warm';
+    return 'gpu-temp-hot';
+  }
+
+  function renderGpuStats(data) {
+    var gpus = data.gpus || [];
+    if (gpus.length === 0) {
+      gpuGridEl.style.display = 'none';
+      return;
+    }
+
+    // Set grid columns based on GPU count
+    gpuGridEl.style.display = '';
+    gpuGridEl.style.gridTemplateColumns = 'repeat(' + gpus.length + ', 1fr)';
+
+    var html = '';
+    for (var i = 0; i < gpus.length; i++) {
+      var g = gpus[i];
+      var shortName = g.name.replace('NVIDIA ', '');
+      var memPct = g.memory_total > 0 ? (g.memory_used / g.memory_total * 100).toFixed(0) : '--';
+      html += '<div class="gpu-card">'
+        + '<div class="gpu-header">'
+          + '<span class="label">GPU ' + g.index + '</span>'
+          + '<span class="gpu-name">' + escapeHtml(shortName) + '</span>'
+        + '</div>'
+        + '<div class="gpu-row">'
+          + '<span class="gpu-metric-label">温度</span>'
+          + '<span class="gpu-metric-value ' + tempClass(g.temperature) + '">' + g.temperature + ' °C</span>'
+        + '</div>'
+        + '<div class="gpu-row">'
+          + '<span class="gpu-metric-label">使用率</span>'
+          + '<span class="gpu-metric-value">' + g.utilization + ' %</span>'
+        + '</div>'
+        + '<div class="gpu-row">'
+          + '<span class="gpu-metric-label">显存</span>'
+          + '<span class="gpu-metric-value" title="' + g.memory_used + ' / ' + g.memory_total + ' MiB">' + formatMem(g.memory_used) + ' / ' + formatMem(g.memory_total) + ' (' + memPct + '%)</span>'
+        + '</div>'
+        + '</div>';
+    }
+    gpuGridEl.innerHTML = html;
+  }
+
+  async function refreshGpuStats() {
+    try {
+      var data = await fetchJSON('/api/gpu-stats');
+      renderGpuStats(data);
+    } catch (e) {
+      // Silently fail — GPU stats are secondary info
+    }
+  }
+
   // --- Active requests ---
 
   var activeSectionEl = document.getElementById('activeSection');
@@ -757,7 +1022,7 @@ table tr:hover td { background: rgba(88, 166, 255, 0.04); }
         + '<td>' + typeBadge + '</td>'
         + '<td>' + formatMs(r.elapsed_ms) + '</td>'
         + '<td>' + statusLabel + '</td>'
-        + '<td><button class="cancel-btn"' + cancelDisabled + ' onclick="cancelReq(\'' + escapeHtml(r.id) + '\', this)">断开</button></td>'
+        + '<td><button class="cancel-btn"' + cancelDisabled + ' onclick="cancelReq(\'' + escapeHtml(r.id) + '\')">断开</button></td>'
         + '</tr>';
     }
     activeTbody.innerHTML = html;
@@ -772,16 +1037,141 @@ table tr:hover td { background: rgba(88, 166, 255, 0.04); }
     }
   }
 
-  window.cancelReq = async function(reqId, btn) {
+  window.cancelReq = async function(reqId) {
     if (!confirm('确认断开该请求？客户端将收到 499 错误。')) return;
-    btn.disabled = true;
-    btn.textContent = '断开中...';
     try {
-      await fetch('/api/active-requests/' + encodeURIComponent(reqId) + '/cancel', { method: 'POST' });
+      var resp = await fetch('/api/active-requests/' + encodeURIComponent(reqId) + '/cancel', { method: 'POST' });
+      if (!resp.ok) console.warn('Cancel failed:', resp.status);
       refreshActive();
     } catch (e) {
-      btn.textContent = '断开失败';
-      btn.disabled = false;
+      console.error('Cancel error:', e);
+    }
+  };
+
+  // --- API Keys Management ---
+
+  var keysTbody = document.getElementById('keysTbody');
+  var keysCountEl = document.getElementById('keysCount');
+  var keyRevealEl = document.getElementById('keyReveal');
+  var keyRevealCodeEl = document.getElementById('keyRevealCode');
+  var keyNameInput = document.getElementById('keyNameInput');
+  var keyExpirySelect = document.getElementById('keyExpirySelect');
+  var revealedKey = null;
+  var keyMaskToId = {};
+
+  function getKeyStatus(k) {
+    if (k.enabled === 0) return { label: '已禁用', cls: 'key-disabled' };
+    if (k.expired_at && new Date(k.expired_at) < new Date()) return { label: '已过期', cls: 'key-expired' };
+    return { label: '有效', cls: 'key-enabled' };
+  }
+
+  function formatKeyExpiry(expiredAt) {
+    if (!expiredAt) return '<span class="na">永不过期</span>';
+    var d = new Date(expiredAt);
+    return d.getFullYear() + '-'
+      + String(d.getMonth() + 1).padStart(2, '0') + '-'
+      + String(d.getDate()).padStart(2, '0') + ' '
+      + String(d.getHours()).padStart(2, '0') + ':'
+      + String(d.getMinutes()).padStart(2, '0');
+  }
+
+  async function refreshKeys() {
+    try {
+      var data = await fetchJSON('/api/keys');
+      var keys = data.keys || [];
+      keyMaskToId = {};
+      keysCountEl.textContent = keys.length;
+      if (keys.length === 0) {
+        keysTbody.innerHTML = '<tr><td colspan="6" class="empty-state">暂无 API Key</td></tr>';
+        return;
+      }
+      var html = '';
+      for (var i = 0; i < keys.length; i++) {
+        var k = keys[i];
+        keyMaskToId[k.masked_id] = k.id;
+        var status = getKeyStatus(k);
+        var toggleLabel = k.enabled ? '禁用' : '启用';
+        html += '<tr>'
+          + '<td style="color:var(--text-secondary)">' + escapeHtml(k.masked_id) + '</td>'
+          + '<td>' + escapeHtml(k.name) + '</td>'
+          + '<td class="time-col">' + formatTime(k.created_at) + '</td>'
+          + '<td>' + formatKeyExpiry(k.expired_at) + '</td>'
+          + '<td><span class="' + status.cls + '">' + status.label + '</span></td>'
+          + '<td>'
+          +   '<button class="key-action-btn" onclick="toggleKey(\'' + escapeHtml(k.masked_id) + '\',' + !k.enabled + ')">' + toggleLabel + '</button> '
+          +   '<button class="key-action-btn danger" onclick="deleteKey(\'' + escapeHtml(k.masked_id) + '\')">删除</button>'
+          + '</td>'
+          + '</tr>';
+      }
+      keysTbody.innerHTML = html;
+    } catch (e) {
+      console.error('Failed to load keys:', e);
+    }
+  }
+
+  window.createKey = async function() {
+    var name = keyNameInput.value.trim();
+    if (!name) { alert('请输入 Key 名称'); return; }
+    var expiresIn = keyExpirySelect.value || null;
+    var body = { name: name };
+    if (expiresIn) body.expires_in = expiresIn;
+    try {
+      var resp = await fetch('/api/keys', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (!resp.ok) {
+        var err = await resp.json();
+        alert('创建失败: ' + (err.detail || resp.status));
+        return;
+      }
+      var data = await resp.json();
+      revealedKey = data.id;
+      keyRevealCodeEl.textContent = data.id;
+      keyRevealEl.style.display = 'flex';
+      keyNameInput.value = '';
+      keyExpirySelect.value = '';
+      refreshKeys();
+    } catch (e) {
+      alert('创建失败: ' + e.message);
+    }
+  };
+
+  window.copyRevealedKey = function() {
+    if (!revealedKey) return;
+    navigator.clipboard.writeText(revealedKey).then(function() {
+      keyRevealEl.style.display = 'none';
+      revealedKey = null;
+    });
+  };
+
+  window.toggleKey = async function(maskedId, enable) {
+    if (!confirm((enable ? '启用' : '禁用') + '该 Key？')) return;
+    var keyId = keyMaskToId[maskedId];
+    if (!keyId) { alert('找不到对应 Key'); return; }
+    try {
+      await fetch('/api/keys/' + encodeURIComponent(keyId), {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled: enable }),
+      });
+      refreshKeys();
+    } catch (e) {
+      alert('操作失败: ' + e.message);
+    }
+  };
+
+  window.deleteKey = async function(maskedId) {
+    if (!confirm('确认删除该 Key？此操作不可撤销。')) return;
+    var keyId = keyMaskToId[maskedId];
+    if (!keyId) { alert('找不到对应 Key'); return; }
+    try {
+      var resp = await fetch('/api/keys/' + encodeURIComponent(keyId), { method: 'DELETE' });
+      if (!resp.ok) { alert('删除失败'); return; }
+      refreshKeys();
+    } catch (e) {
+      alert('删除失败: ' + e.message);
     }
   };
 
@@ -818,6 +1208,8 @@ table tr:hover td { background: rgba(88, 166, 255, 0.04); }
     pollTimer = setInterval(refresh, 5000);
     if (activePollTimer) clearInterval(activePollTimer);
     activePollTimer = setInterval(refreshActive, 2000);
+    if (gpuPollTimer) clearInterval(gpuPollTimer);
+    gpuPollTimer = setInterval(refreshGpuStats, 4000);
   }
 
   // --- Event listeners ---
@@ -830,6 +1222,8 @@ table tr:hover td { background: rgba(88, 166, 255, 0.04); }
   // --- Init ---
 
   refresh();
+  refreshGpuStats();
+  refreshKeys();
   startPolling();
 })();
 </script>
