@@ -19,6 +19,23 @@ from vllm_metrics_proxy.vllm_metrics import snapshot_counters, measure_counter_d
 
 logger = logging.getLogger(__name__)
 
+
+async def _resolve_key_from_headers(request: Request, db_path: str) -> str | None:
+    """Best-effort key resolution when auth is disabled.
+
+    Extracts the API key from headers and looks it up in the DB.
+    Returns the key_id if found, None otherwise.  Never raises.
+    """
+    try:
+        from vllm_metrics_proxy.auth import _extract_key_from_headers, get_api_key
+        raw_key = _extract_key_from_headers(dict(request.headers))
+        if not raw_key:
+            return None
+        key_row = await get_api_key(db_path, raw_key)
+        return key_row["id"] if key_row else None
+    except Exception:
+        return None
+
 # ---- Active request tracking ----
 
 _active_requests: dict[str, dict] = {}
@@ -82,9 +99,10 @@ async def proxy_request(request: Request, key_id: str | None = None) -> JSONResp
     start_time = time.monotonic()
     db_path = request.app.state.db_path
 
-    # Normalize sentinel — don't store when auth is disabled
+    # When auth is disabled, still try to extract and resolve the key
+    # from headers for metrics enrichment (non-blocking).
     if key_id == "__no_auth__":
-        key_id = None
+        key_id = await _resolve_key_from_headers(request, db_path)
 
     body = await request.body()
     content_type = request.headers.get("content-type", "application/json")
