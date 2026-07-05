@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import hmac
+import hashlib
 import re
+import time
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -181,18 +184,49 @@ async def verify_api_key(request: Request) -> str:
     return key_id
 
 
-# ---- Admin token verification ----
+# ---- Admin session token (HMAC-signed, no extra deps) ----
+
+_SESSION_TTL_DEFAULT = 86400  # 24 hours
+
+
+def create_admin_token(password: str, ttl: int = _SESSION_TTL_DEFAULT) -> str:
+    """Create an HMAC-SHA256 signed token valid for *ttl* seconds.
+
+    Format: ``{timestamp}.{hmac_hex}``
+    """
+    ts = str(int(time.time()))
+    sig = hmac.new(
+        password.encode(), ts.encode(), hashlib.sha256,
+    ).hexdigest()
+    return f"{ts}.{sig}"
+
 
 async def verify_admin_token(request: Request) -> None:
-    """FastAPI Depends dependency for admin-only key management endpoints.
+    """FastAPI Depends dependency for admin-only endpoints.
 
-    When admin_token is configured (non-empty), requests must include
-    X-Admin-Token header matching it. Otherwise, pass through.
-    Raises 403 on mismatch.
+    Verifies an HMAC-signed token from the ``X-Admin-Token`` header.
+    Raises 403 if missing, invalid, or expired.
     """
-    expected = request.app.state.settings.admin_token
+    expected = request.app.state.settings.dashboard_password
     if not expected:
-        return  # no admin token configured — skip verification
-    provided = request.headers.get("x-admin-token", "")
-    if provided != expected:
+        raise HTTPException(status_code=403, detail="Dashboard password not configured")
+
+    token = request.headers.get("x-admin-token", "")
+    if not token or "." not in token:
+        raise HTTPException(status_code=403, detail="Invalid or missing admin token")
+
+    ts_str, sig = token.rsplit(".", 1)
+    try:
+        ts = int(ts_str)
+    except ValueError:
+        raise HTTPException(status_code=403, detail="Invalid admin token")
+
+    ttl = request.app.state.settings.session_ttl_seconds or _SESSION_TTL_DEFAULT
+    if time.time() - ts > ttl:
+        raise HTTPException(status_code=403, detail="Admin token expired")
+
+    expected_sig = hmac.new(
+        expected.encode(), ts_str.encode(), hashlib.sha256,
+    ).hexdigest()
+    if not hmac.compare_digest(sig, expected_sig):
         raise HTTPException(status_code=403, detail="Invalid or missing admin token")

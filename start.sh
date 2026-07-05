@@ -16,9 +16,9 @@ cd "$SCRIPT_DIR"
 export VLLM_UPSTREAM="${VLLM_UPSTREAM:-http://localhost:11434}"
 export PROXY_PORT="${1:-${PROXY_PORT:-8000}}"
 export DB_PATH="${DB_PATH:-${SCRIPT_DIR}/metrics.db}"
-export LOG_LEVEL="${LOG_LEVEL:-INFO}"
+export LOG_LEVEL="${LOG_LEVEL:-ERROR}"
 export AUTH_ENABLED="${AUTH_ENABLED:-true}"
-export ADMIN_TOKEN="${ADMIN_TOKEN:-lee21321@hot}"
+export DASHBOARD_PASSWORD="${DASHBOARD_PASSWORD:-lee21321@hot}"
 
 # ---- 颜色 ----
 GREEN='\033[0;32m'
@@ -36,6 +36,11 @@ echo -e "  数据库:     ${DB_PATH}"
 echo -e "  日志级别:   ${LOG_LEVEL}"
 echo -e "  API Key:    ${AUTH_ENABLED}"
 echo -e "  管理口令:   ${ADMIN_TOKEN:-(未设置，Key管理不受限)}"
+if [ -n "$DASHBOARD_PASSWORD" ]; then
+  echo -e "  Dashboard密码: ${GREEN}已设置${NC}"
+else
+  echo -e "  Dashboard密码: ${YELLOW}未设置（Dashboard/Admin将拒绝访问）${NC}"
+fi
 echo ""
 echo -e "  Dashboard:  ${GREEN}http://localhost:${PROXY_PORT}/dashboard${NC}"
 echo -e "  API:        ${GREEN}http://localhost:${PROXY_PORT}/v1/...${NC}"

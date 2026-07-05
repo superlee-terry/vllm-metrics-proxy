@@ -428,8 +428,8 @@ table tr:hover td { background: rgba(88, 166, 255, 0.04); }
     <div class="header-controls">
       <label for="timeRange">时间范围:</label>
       <select class="time-select" id="timeRange">
-        <option value="1m" selected>1 分钟</option>
-        <option value="5m">5 分钟</option>
+        <option value="5m" selected>5 分钟</option>
+        <option value="15m">15 分钟</option>
         <option value="30m">30 分钟</option>
         <option value="1h">1 小时</option>
       </select>
@@ -580,17 +580,28 @@ table tr:hover td { background: rgba(88, 166, 255, 0.04); }
   var dashboardToken = '';
 
   window.unlockDashboard = function() {
-    var token = document.getElementById('adminTokenInput').value.trim();
-    if (!token) return;
-    dashboardToken = token;
-    // Verify token by hitting an admin-protected endpoint
-    fetch('/api/keys', { headers: { 'X-Admin-Token': token } }).then(function(resp) {
-      if (resp.status === 403) {
-        document.getElementById('authError').textContent = '口令无效，请重新输入';
+    var password = document.getElementById('adminTokenInput').value;
+    if (!password) return;
+    fetch('/api/auth/verify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password: password }),
+    }).then(function(resp) {
+      return resp.json().then(function(data) { return { status: resp.status, data: data }; });
+    }).then(function(result) {
+      if (result.status === 403) {
+        document.getElementById('authError').textContent = '密码错误，请重新输入';
         document.getElementById('authError').classList.remove('hidden');
         dashboardToken = '';
         return;
       }
+      if (result.status === 503) {
+        document.getElementById('authError').textContent = result.data.detail || '密码未配置，请联系管理员';
+        document.getElementById('authError').classList.remove('hidden');
+        dashboardToken = '';
+        return;
+      }
+      dashboardToken = result.data.token || '';
       document.getElementById('authGate').classList.add('hidden');
       document.getElementById('dashPanel').classList.remove('hidden');
       initDashboard();
@@ -611,7 +622,7 @@ table tr:hover td { background: rgba(88, 166, 255, 0.04); }
   }
 
   // State
-  var currentSince = '1m';
+  var currentSince = '5m';
   var reqOffset = 0;
   var reqLimit = 25;
   var reqTotal = 0;
@@ -1013,7 +1024,7 @@ table tr:hover td { background: rgba(88, 166, 255, 0.04); }
   window.cancelReq = async function(reqId) {
     if (!confirm('确认断开该请求？客户端将收到 499 错误。')) return;
     try {
-      var resp = await fetch('/api/active-requests/' + encodeURIComponent(reqId) + '/cancel', { method: 'POST' });
+      var resp = await fetch('/api/active-requests/' + encodeURIComponent(reqId) + '/cancel', { method: 'POST', headers: authHeaders() });
       if (!resp.ok) console.warn('Cancel failed:', resp.status);
       refreshActive();
     } catch (e) {

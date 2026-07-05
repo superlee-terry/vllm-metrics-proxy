@@ -3,8 +3,10 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import time
 import uuid
+from datetime import datetime, timezone
 from typing import AsyncGenerator
 
 import httpx
@@ -20,6 +22,433 @@ from vllm_metrics_proxy.vllm_metrics import snapshot_counters, measure_counter_d
 logger = logging.getLogger(__name__)
 
 
+# ---- Loop detection helpers ----
+
+def _detect_loop(window: list[str], repeat_threshold: int, min_tail_match: int) -> tuple[bool, str]:
+    """Detect output loops in a sliding window of chunk contents.
+
+    Returns (is_loop, reason) where reason explains which strategy triggered.
+
+    Two strategies:
+    1. Tail-match: last N non-empty chunks are all identical.
+    2. Chunk-repeat: an entire chunk (>=20 chars) appears >= threshold times
+       in the last 10 chunks. Only full-chunk matches count — partial substrings
+       are ignored to prevent false positives on common words/punctuation.
+    """
+    if len(window) < min_tail_match:
+        return False, ""
+
+    # Strategy 1: last N chunks identical
+    # Exclude pure-whitespace chunks and short tokens (punctuation, JSON syntax)
+    # to prevent false positives on repeated single quotes, commas, etc.
+    tail = window[-min_tail_match:]
+    if all(t == tail[0] for t in tail) and tail[0].strip() and len(tail[0].strip()) >= 5:
+        return True, f"tail_match: last {min_tail_match} chunks identical='{tail[0][:200]}'"
+
+    # Strategy 2: chunk-level repetition
+    # Count how many times each distinct chunk appears in the last 10 chunks.
+    # Only chunks >= 10 chars and non-whitespace qualify (filters out
+    # punctuation, single tokens, whitespace, and indentation blanks).
+    MIN_CHUNK_LEN = 10
+    tail_slice = window[-10:] if len(window) >= 10 else window
+
+    from collections import Counter
+    # Filter to substantial chunks only
+    # Exclude chunks that are purely whitespace (e.g. indentation spaces/tabs)
+    # to avoid false positives on code-formatted output.
+    substantial = [c for c in tail_slice if len(c) >= MIN_CHUNK_LEN and c.strip()]
+    if len(substantial) < repeat_threshold:
+        return False, ""
+
+    counts = Counter(substantial)
+    most_common_chunk, most_common_count = counts.most_common(1)[0]
+    if most_common_count >= repeat_threshold:
+        return True, f"chunk_repeat: chunk({most_common_count}x, len={len(most_common_chunk)})='{most_common_chunk[:200]}'"
+
+    return False, ""
+
+
+def _is_anthropic_request(original_path: str) -> bool:
+    """Check if the original request was in Anthropic /v1/messages format."""
+    return original_path in ("/v1/messages", "/v1/v1/messages")
+
+
+def _transform_openai_to_anthropic(data: dict) -> dict:
+    """Transform OpenAI chat completion response to Anthropic messages format."""
+    choice = (data.get("choices") or [{}])[0]
+    message = choice.get("message") or {}
+    content_text = message.get("content") or ""
+    reasoning_text = message.get("reasoning") or ""
+    
+    # Build content blocks - include reasoning if present
+    content_blocks = []
+    if reasoning_text:
+        content_blocks.append({"type": "text", "text": reasoning_text})
+    if content_text:
+        content_blocks.append({"type": "text", "text": content_text})
+    if not content_blocks:
+        content_blocks = [{"type": "text", "text": ""}]
+    tool_calls = message.get("tool_calls") or []
+    for tc in tool_calls:
+        func = tc.get("function") or {}
+        content_blocks.append({
+            "type": "tool_use",
+            "id": tc.get("id", ""),
+            "name": func.get("name", ""),
+            "input": json.loads(func.get("arguments", "{}")),
+        })
+    
+    # Determine stop_reason
+    finish_reason = choice.get("finish_reason") or "stop"
+    if finish_reason == "tool_calls":
+        stop_reason = "tool_use"
+    elif finish_reason == "length":
+        stop_reason = "max_tokens"
+    else:
+        stop_reason = "end_turn"
+    
+    usage = data.get("usage") or {}
+    
+    return {
+        "id": data.get("id", ""),
+        "type": "message",
+        "role": "assistant",
+        "model": data.get("model", ""),
+        "content": content_blocks,
+        "stop_reason": stop_reason,
+        "stop_sequence": None,
+        "usage": {
+            "input_tokens": usage.get("prompt_tokens", 0),
+            "output_tokens": usage.get("completion_tokens", 0),
+        },
+    }
+
+
+def _transform_stream_chunk_to_anthropic(
+    chunk: dict, is_first: bool, is_last: bool, usage: dict | None
+) -> list[str]:
+    """Transform an OpenAI streaming chunk to Anthropic SSE events.
+    
+    Returns a list of SSE lines to emit.
+    """
+    lines = []
+    
+    if is_first:
+        # Emit message_start
+        msg_start = {
+            "type": "message_start",
+            "message": {
+                "id": "",
+                "type": "message",
+                "role": "assistant",
+                "model": chunk.get("model", ""),
+                "content": [],
+                "stop_reason": None,
+                "stop_sequence": None,
+                "usage": {"input_tokens": 0, "output_tokens": 0},
+            },
+        }
+        lines.append(f"data: {json.dumps(msg_start)}\n")
+        
+        # Emit content_block_start
+        cb_start = {"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}}
+        lines.append(f"data: {json.dumps(cb_start)}\n")
+    
+    # Emit content_block_delta for each text chunk
+    choice = (chunk.get("choices") or [{}])[0]
+    delta = choice.get("delta") or {}
+    text = delta.get("content") or ""
+    if text:
+        cb_delta = {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": text}}
+        lines.append(f"data: {json.dumps(cb_delta)}\n")
+    
+    # Emit tool_use blocks if present
+    tool_calls = delta.get("tool_calls") or []
+    for tc in tool_calls:
+        func = tc.get("function") or {}
+        cb_start_tool = {
+            "type": "content_block_start",
+            "index": len(lines),
+            "content_block": {
+                "type": "tool_use",
+                "id": tc.get("id", ""),
+                "name": func.get("name", ""),
+                "input": {},
+            },
+        }
+        lines.append(f"data: {json.dumps(cb_start_tool)}\n")
+        if func.get("arguments"):
+            cb_delta_tool = {
+                "type": "content_block_delta",
+                "index": len(lines) - 1,
+                "delta": {"type": "input_json_delta", "partial_json": func["arguments"]},
+            }
+            lines.append(f"data: {json.dumps(cb_delta_tool)}\n")
+    
+    if is_last:
+        # Emit message_delta with usage
+        usage_data = usage or chunk.get("usage") or {}
+        msg_delta = {
+            "type": "message_delta",
+            "delta": {
+                "stop_reason": "end_turn",
+                "stop_sequence": None,
+            },
+            "usage": {
+                "input_tokens": usage_data.get("prompt_tokens", 0),
+                "output_tokens": usage_data.get("completion_tokens", 0),
+            },
+        }
+        lines.append(f"data: {json.dumps(msg_delta)}\n")
+        lines.append("data: [DONE]\n")
+    
+    return lines
+
+
+def _normalize_upstream_path(path: str) -> str:
+    """Normalize incoming paths for multi-client compatibility.
+    
+    Handles:
+    - Claude Code MCP: /v1/v1/messages → /v1/chat/completions (Anthropic→OpenAI)
+    - OpenAI format: /v1/chat/completions → /v1/chat/completions (passthrough)
+    - vLLM native: /v1/completions, /v1/embeddings → passthrough
+    - Ollama format: /v1/generate, /v1/chat → /v1/chat/completions
+    """
+    # Fix double /v1 prefix (Claude Code MCP sends base_url=/v1 + path=/v1/messages)
+    if path == "/v1/v1/messages":
+        return "/v1/chat/completions"
+    if path.startswith("/v1/v1/"):
+        # General case: /v1/v1/X → /v1/X
+        return "/" + path.split("/v1/v1/", 1)[1]
+    
+    # Anthropic /v1/messages → OpenAI /v1/chat/completions
+    if path == "/v1/messages":
+        return "/v1/chat/completions"
+    
+    # Ollama-style paths → OpenAI format
+    if path == "/v1/generate":
+        return "/v1/completions"
+    if path == "/v1/chat":
+        return "/v1/chat/completions"
+    
+    # Everything else: passthrough
+    return path
+
+
+def _transform_body_for_upstream(
+    original_path: str,
+    normalized_path: str,
+    payload: dict,
+    body: bytes,
+) -> tuple[bytes, dict, str]:
+    """Transform Ollama-style request body to OpenAI/vLLM format.
+    
+    When the path was normalized (e.g. /v1/generate → /v1/completions),
+    the request body also needs transformation because Ollama and OpenAI
+    use different field names.
+    """
+    transformed = dict(payload)
+    
+    # Ollama /v1/generate → OpenAI /v1/completions
+    if original_path == "/v1/generate":
+        # Ollama uses 'prompt', OpenAI completions uses 'prompt' too - mostly compatible
+        # But Ollama may have 'images' field which vLLM doesn't expect
+        transformed.pop("images", None)
+        transformed.pop("format", None)  # Ollama-specific JSON format field
+        # Map Ollama options to OpenAI params
+        opts = transformed.pop("options", {})
+        if opts:
+            for key in ("temperature", "top_p", "top_k", "max_tokens", "seed",
+                        "frequency_penalty", "presence_penalty", "stop", "repeat_penalty"):
+                if key in opts:
+                    transformed.setdefault(key, opts[key])
+    
+    # Ollama /v1/chat → OpenAI /v1/chat/completions
+    elif original_path == "/v1/chat":
+        # Ollama chat uses 'messages' which is the same as OpenAI - mostly compatible
+        transformed.pop("format", None)
+        # Map Ollama options
+        opts = transformed.pop("options", {})
+        if opts:
+            for key in ("temperature", "top_p", "top_k", "max_tokens", "seed",
+                        "frequency_penalty", "presence_penalty", "stop", "repeat_penalty"):
+                if key in opts:
+                    transformed.setdefault(key, opts[key])
+        # Ollama 'keep_alive' is Ollama-specific
+        transformed.pop("keep_alive", None)
+        # Ollama 'stream_options' might differ
+        if "stream_options" not in transformed:
+            pass  # Will be handled by stream_options injection below
+    
+    # Anthropic /v1/messages → OpenAI /v1/chat/completions
+    # Claude Code sends: role: system/user/assistant, max_tokens, tools (Anthropic format)
+    # vLLM needs: role: user/assistant only, max_tokens, tools (OpenAI format)
+    if normalized_path == "/v1/chat/completions" and (
+        original_path in ("/v1/messages", "/v1/v1/messages")
+    ):
+        # --- Strip system messages, merge into first user message ---
+        messages = transformed.get("messages", [])
+        system_content = ""
+        filtered_messages = []
+        for msg in messages:
+            if msg.get("role") == "system":
+                # Extract text content from system message
+                if isinstance(msg.get("content"), str):
+                    system_content += msg["content"]
+                elif isinstance(msg.get("content"), list):
+                    for block in msg["content"]:
+                        if isinstance(block, dict) and block.get("type") == "text":
+                            system_content += block.get("text", "")
+                elif isinstance(msg.get("content"), str):
+                    system_content += msg["content"]
+            else:
+                filtered_messages.append(msg)
+        
+        # Prepend system content to first user message
+        if system_content:
+            for i, msg in enumerate(filtered_messages):
+                if msg.get("role") == "user":
+                    if isinstance(msg.get("content"), str):
+                        msg["content"] = system_content + "\n" + msg["content"]
+                    elif isinstance(msg.get("content"), list):
+                        if system_content:
+                            msg["content"].insert(0, {"type": "text", "text": system_content})
+                    break
+        
+        transformed["messages"] = filtered_messages
+        
+        # --- Map Anthropic fields to OpenAI ---
+        # max_tokens → max_tokens (same name, OK)
+        # stop → stop (same, OK)
+        # temperature/top_p → same
+        # tools: Anthropic {name, description, input_schema} → OpenAI {type:function, function:{name, description, parameters}}
+        tools = transformed.get("tools")
+        if tools:
+            openai_tools = []
+            for tool in tools:
+                openai_tools.append({
+                    "type": "function",
+                    "function": {
+                        "name": tool.get("name", ""),
+                        "description": tool.get("description", ""),
+                        "parameters": tool.get("input_schema", {}),
+                    }
+                })
+            transformed["tools"] = openai_tools
+        
+        # Remove Anthropic-specific fields
+        transformed.pop("metadata", None)
+        transformed.pop("system", None)  # Anthropic top-level system param
+        transformed.pop("stream_options", None)  # Will be re-added later
+    
+    # Anthropic /v1/messages → OpenAI /v1/chat/completions
+    if _is_anthropic_request(original_path):
+        # --- Strip system messages, merge into first user message ---
+        messages = transformed.get("messages", [])
+        system_content = ""
+        filtered_messages = []
+        for msg in messages:
+            if msg.get("role") == "system":
+                if isinstance(msg.get("content"), str):
+                    system_content += msg["content"] + "\n"
+                elif isinstance(msg.get("content"), list):
+                    for block in msg["content"]:
+                        if isinstance(block, dict) and block.get("type") == "text":
+                            system_content += block.get("text", "") + "\n"
+            else:
+                filtered_messages.append(msg)
+        
+        # Prepend system content to first user message
+        if system_content.strip():
+            for i, msg in enumerate(filtered_messages):
+                if msg.get("role") == "user":
+                    if isinstance(msg.get("content"), str):
+                        msg["content"] = system_content.strip() + "\n" + msg["content"]
+                    elif isinstance(msg.get("content"), list):
+                        msg["content"].insert(0, {"type": "text", "text": system_content.strip()})
+                    break
+        transformed["messages"] = filtered_messages
+        
+        # --- Convert Anthropic tool_use/tool_result to OpenAI tool_calls/tool ---
+        # Anthropic: assistant sends {"type": "tool_use", "id": "...", "name": "...", "input": {...}}
+        # OpenAI: assistant sends tool_calls: [{"id": "...", "type": "function", "function": {"name": "...", "arguments": "..."}}]
+        # Anthropic: user sends {"type": "tool_result", "tool_use_id": "...", "content": "..."}
+        # OpenAI: tool role message: {"role": "tool", "tool_call_id": "...", "content": "..."}
+        converted_messages = []
+        for msg in filtered_messages:
+            if msg.get("role") == "assistant" and isinstance(msg.get("content"), list):
+                content_blocks = msg["content"]
+                tool_calls = []
+                remaining_content = []
+                for block in content_blocks:
+                    if isinstance(block, dict) and block.get("type") == "tool_use":
+                        tool_calls.append({
+                            "id": block.get("id", ""),
+                            "type": "function",
+                            "function": {
+                                "name": block.get("name", ""),
+                                "arguments": json.dumps(block.get("input", {})),
+                            },
+                        })
+                    else:
+                        remaining_content.append(block)
+                if tool_calls:
+                    converted_messages.append({
+                        "role": "assistant",
+                        "content": remaining_content[0].get("text", "") if remaining_content and isinstance(remaining_content[0], dict) and remaining_content[0].get("type") == "text" else (remaining_content if remaining_content else None),
+                        "tool_calls": tool_calls,
+                    })
+                else:
+                    converted_messages.append(msg)
+            elif msg.get("role") == "user" and isinstance(msg.get("content"), list):
+                # Check for tool_result blocks
+                tool_results = []
+                remaining_content = []
+                for block in msg["content"]:
+                    if isinstance(block, dict) and block.get("type") == "tool_result":
+                        tool_results.append(block)
+                    else:
+                        remaining_content.append(block)
+                if tool_results:
+                    # Split into: non-tool content as user message, then tool responses as tool messages
+                    if remaining_content:
+                        converted_messages.append({
+                            "role": "user",
+                            "content": remaining_content,
+                        })
+                    for tr in tool_results:
+                        content_val = tr.get("content", "")
+                        if isinstance(content_val, list):
+                            # Extract text from content blocks
+                            texts = [b.get("text", "") for b in content_val if isinstance(b, dict) and b.get("type") == "text"]
+                            content_val = " ".join(texts)
+                        converted_messages.append({
+                            "role": "tool",
+                            "tool_call_id": tr.get("tool_use_id", ""),
+                            "content": content_val,
+                        })
+                else:
+                    converted_messages.append(msg)
+            else:
+                converted_messages.append(msg)
+        transformed["messages"] = converted_messages
+        
+        # Map Anthropic-specific fields
+        if "max_tokens" in transformed:
+            transformed["max_completion_tokens"] = transformed.pop("max_tokens")
+        # Remove Anthropic-specific fields vLLM doesn't understand
+        transformed.pop("metadata", None)
+        transformed.pop("system", None)  # Anthropic top-level system param
+        transformed.pop("thinking", None)
+        transformed.pop("prompt_caching", None)
+    
+    # Double /v1 prefix - no body transformation needed, just path fix
+    # (Claude Code MCP uses OpenAI-compatible body format already)
+    
+    new_body = json.dumps(transformed).encode()
+    return new_body, transformed, "application/json"
+
+
 async def _resolve_key_from_headers(request: Request, db_path: str) -> str | None:
     """Best-effort key resolution when auth is disabled.
 
@@ -27,20 +456,35 @@ async def _resolve_key_from_headers(request: Request, db_path: str) -> str | Non
     Returns the key_id if found, None otherwise.  Never raises.
     """
     try:
-        from vllm_metrics_proxy.auth import _extract_key_from_headers, get_api_key
-        raw_key = _extract_key_from_headers(dict(request.headers))
+        from vllm_metrics_proxy.auth import _extract_key_from_headers, get_api_key, mask_key
+        hdrs = dict(request.headers)
+        raw_key = _extract_key_from_headers(hdrs)
         if not raw_key:
+            # Log which auth-related headers are present (values masked) for debugging
+            auth_hdr = hdrs.get("authorization", "(none)")
+            xkey_hdr = hdrs.get("x-api-key", "(none)")
+            logger.warning(
+                "KEY_RESOLVE [%s] no key extracted  auth=%s  x-api-key=%s  path=%s  all_headers=%s",
+                id(request), auth_hdr[:20], xkey_hdr[:20], request.url.path,
+                list(hdrs.keys()),
+            )
             return None
         key_row = await get_api_key(db_path, raw_key)
-        return key_row["id"] if key_row else None
-    except Exception:
+        if key_row:
+            logger.info("KEY_RESOLVE [%s] resolved raw_key=%s → name=%s",
+                        id(request), mask_key(raw_key), key_row.get("name", ""))
+            return key_row["id"]
+        logger.warning("KEY_RESOLVE [%s] key not found in DB  raw_key=%s", id(request), mask_key(raw_key))
+        return None
+    except Exception as exc:
+        logger.error("KEY_RESOLVE [%s] exception: %s", id(request), exc, exc_info=True)
         return None
 
 # ---- Active request tracking ----
 
 _active_requests: dict[str, dict] = {}
 _cancel_flags: set[str] = set()
-_live_streams: dict[str, httpx.Response] = {}  # request_id -> httpx Response for force-cancel
+_live_resources: dict[str, httpx.AsyncClient | httpx.Response] = {}  # request_id -> closeable resource for force-cancel
 
 
 def register_active_request(request_id: str, model: str | None, stream: bool, api_key_name: str = "") -> None:
@@ -58,19 +502,19 @@ def unregister_active_request(request_id: str) -> None:
     """Remove a request from active tracking."""
     _active_requests.pop(request_id, None)
     _cancel_flags.discard(request_id)
-    _live_streams.pop(request_id, None)
+    _live_resources.pop(request_id, None)
 
 
 def cancel_active_request(request_id: str) -> bool:
-    """Cancel an active request by closing its upstream stream."""
+    """Cancel an active request by closing its upstream resource."""
     if request_id not in _active_requests:
         return False
     _cancel_flags.add(request_id)
-    # Force-close the httpx stream to unblock the reader immediately
-    resp = _live_streams.pop(request_id, None)
-    if resp:
+    # Force-close the httpx resource (Response for streaming, AsyncClient for non-streaming)
+    resource = _live_resources.pop(request_id, None)
+    if resource:
         try:
-            resp.close()
+            resource.close()
         except Exception:
             pass
     return True
@@ -107,24 +551,65 @@ async def proxy_request(request: Request, key_id: str | None = None) -> JSONResp
     body = await request.body()
     content_type = request.headers.get("content-type", "application/json")
 
-    try:
-        payload = json.loads(body)
-        stream = payload.get("stream", False)
-        model = payload.get("model")
-    except (json.JSONDecodeError, AttributeError):
-        stream = False
-        model = None
+    # Initialize before try/except to avoid UnboundLocalError on GET requests
+    payload = None
+    stream = False
+    model = None
 
-    logger.debug(
-        "PROXY [%s] %s %s model=%r stream=%r body_len=%d",
-        request_id[:8], request.method, request.url.path, model, stream, len(body),
-    )
+    if body:
+        try:
+            payload = json.loads(body)
+            if isinstance(payload, dict):
+                stream = payload.get("stream", False)
+                model = payload.get("model")
+        except (json.JSONDecodeError, AttributeError):
+            pass
 
+    # Resolve key name early for logging and active request display
+    api_key_name = ""
+    if key_id:
+        key_row = await _get_api_key(db_path, key_id)
+        if key_row:
+            api_key_name = key_row.get("name", "")
+
+    # Log request parameters — especially model params for chat endpoints
+    log_params = {"model": model, "stream": stream}
+    if api_key_name:
+        log_params["key"] = api_key_name
+    if isinstance(payload, dict):
+        for key in ("temperature", "top_p", "top_k", "max_tokens", "max_completion_tokens",
+                     "frequency_penalty", "presence_penalty", "seed",
+                     "stop", "tools", "tool_choice", "response_format",
+                     "messages", "prompt"):
+            val = payload.get(key)
+            if val is not None:
+                # Truncate messages/prompt to avoid log spam
+                if key in ("messages", "prompt") and isinstance(val, (list, str)):
+                    first_item = val[0] if isinstance(val, list) and val else val
+                    truncated = str(first_item)[:200]
+                    log_params[key] = f"...[{len(val)} items/chars] first={truncated!r}..."
+                else:
+                    log_params[key] = val
+    logger.info("PROXY [%s] %s %s %s", request_id[:8], request.method, request.url.path, log_params)
+
+    # Normalize upstream path for multi-client compatibility
     upstream = settings.vllm_upstream.rstrip("/")
-    upstream_url = f"{upstream}{request.url.path}"
+    normalized_path = _normalize_upstream_path(request.url.path)
+    logger.info("PATH NORMALIZE [%s] %s -> %s", request_id[:8], request.url.path, normalized_path)
+    upstream_url = f"{upstream}{normalized_path}"
+
+    # Transform Ollama-style request body to OpenAI format
+    if normalized_path != request.url.path and isinstance(payload, dict):
+        body, payload, content_type = _transform_body_for_upstream(
+            request.url.path, normalized_path, payload, body
+        )
 
     headers = dict(request.headers)
     headers.pop("host", None)
+    # Let httpx compute Content-Length from the actual body (the body may have
+    # been re-serialized by _transform_body_for_upstream, making the original
+    # header stale — e.g. /v1/v1/messages → /v1/messages path normalisation).
+    headers.pop("content-length", None)
 
     # Inject stream_options to get usage data in streaming chunks
     if stream and isinstance(payload, dict):
@@ -134,18 +619,14 @@ async def proxy_request(request: Request, key_id: str | None = None) -> JSONResp
             body = json.dumps(payload).encode()
             content_type = "application/json"
             headers["content-length"] = str(len(body))
+    
+    # Track if this is an Anthropic-style request for response transformation
+    is_anthropic = _is_anthropic_request(request.url.path)
 
     # Snapshot Prometheus counters before the request
     await snapshot_counters(settings.vllm_upstream)
 
-    # Resolve key name for active request display
-    api_key_name = ""
-    if key_id:
-        key_row = await _get_api_key(db_path, key_id)
-        if key_row:
-            api_key_name = key_row.get("name", "")
-
-    # Register active request
+    # Register active request (api_key_name already resolved above)
     register_active_request(request_id, model, stream, api_key_name=api_key_name)
 
     try:
@@ -154,16 +635,23 @@ async def proxy_request(request: Request, key_id: str | None = None) -> JSONResp
             return _handle_streaming(
                 request.method, upstream_url, headers, content_type, body,
                 request_id, start_time, model, db_path, key_id,
+                original_path=request.url.path,
+                wall_clock_timeout=settings.request_timeout_seconds,
+                idle_timeout=settings.stream_idle_timeout,
             )
         else:
-            # Non-streaming: ensure unregister always runs (success, error, exception)
+            # Non-streaming: register client for cancel, ensure unregister always runs
             try:
-                async with httpx.AsyncClient(timeout=httpx.Timeout(300.0, connect=10.0)) as client:
+                client = httpx.AsyncClient(timeout=httpx.Timeout(settings.request_timeout_seconds, connect=10.0))
+                _live_resources[request_id] = client
+                async with client:
                     return await _handle_non_streaming(
                         client, request.method, upstream_url, headers, content_type, body,
                         request_id, start_time, model, db_path, key_id,
+                        original_path=request.url.path,
                     )
             finally:
+                _live_resources.pop(request_id, None)
                 unregister_active_request(request_id)
     except Exception as exc:
         # Already unregistered in finally above for non-stream; for stream this
@@ -187,6 +675,7 @@ async def _handle_non_streaming(
     model: str | None,
     db_path: str,
     key_id: str | None = None,
+    original_path: str = "",
 ) -> JSONResponse:
     resp = await client.request(
         method, upstream_url, content=body, headers=headers,
@@ -199,6 +688,10 @@ async def _handle_non_streaming(
         )
 
     data = resp.json()
+    
+    # Transform OpenAI response back to Anthropic format if needed
+    if _is_anthropic_request(original_path):
+        data = _transform_openai_to_anthropic(data)
     end_time = time.monotonic()
     latency_ms = (end_time - start_time) * 1000.0
 
@@ -258,7 +751,11 @@ def _handle_streaming(
     model: str | None,
     db_path: str,
     key_id: str | None = None,
+    original_path: str = "",
+    wall_clock_timeout: float = 300.0,
+    idle_timeout: float = 30.0,
 ) -> StreamingResponse:
+    is_anthropic = _is_anthropic_request(original_path)
     # Use an asyncio.Queue to decouple upstream reading from client delivery.
     # A background task reads from vLLM and puts chunks into the queue.
     # The ASGI generator reads from the queue and yields to the client.
@@ -276,9 +773,13 @@ def _handle_streaming(
         ttft_ms = None
         first_output_seen = False
         was_cancelled = False
+        loop_triggered = False
+        wall_clock_timed_out = False
+        # Loop detection sliding window
+        loop_window: list[str] = []
 
         try:
-            async with httpx.AsyncClient(timeout=httpx.Timeout(300.0, connect=10.0)) as client:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(idle_timeout, connect=10.0)) as client:
                 async with client.stream(
                     method, upstream_url, content=body, headers=headers,
                 ) as resp:
@@ -290,7 +791,7 @@ def _handle_streaming(
                         return
 
                     # Register stream for force-cancel support
-                    _live_streams[request_id] = resp
+                    _live_resources[request_id] = resp
 
                     async for line in resp.aiter_lines():
                         # Check cancellation flag (set by cancel or stream close)
@@ -298,6 +799,19 @@ def _handle_streaming(
                             was_cancelled = True
                             queue.put_nowait(
                                 json.dumps({"error": {"message": "request cancelled by operator", "type": "server_error", "code": 499}})
+                            )
+                            queue.put_nowait("[DONE]")
+                            break
+
+                        # Wall-clock timeout: total output duration exceeded
+                        if time.monotonic() - start_time > wall_clock_timeout:
+                            wall_clock_timed_out = True
+                            logger.error(
+                                "STREAM TIMEOUT [%s] model=%s elapsed=%.1fs wall_clock_limit=%.1fs — force terminated",
+                                request_id[:8], model, time.monotonic() - start_time, wall_clock_timeout,
+                            )
+                            queue.put_nowait(
+                                json.dumps({"error": {"message": f"stream exceeded wall-clock timeout of {wall_clock_timeout}s", "type": "server_error", "code": 504}})
                             )
                             queue.put_nowait("[DONE]")
                             break
@@ -337,6 +851,63 @@ def _handle_streaming(
                             delta = choice.get("delta") or {}
                             if delta.get("reasoning"):
                                 reasoning_tokens += 1
+
+                        # --- Loop detection (always runs; config switch only controls stream termination) ---
+                        if not loop_triggered:
+                            # Collect chunk text content into sliding window
+                            for choice in choices:
+                                delta = choice.get("delta") or {}
+                                content = delta.get("content") or delta.get("reasoning") or ""
+                                if content:
+                                    loop_window.append(content)
+                                    if len(loop_window) > settings.loop_window_size:
+                                        loop_window = loop_window[-settings.loop_window_size:]
+
+                            loop_result, loop_reason = _detect_loop(
+                                loop_window,
+                                settings.loop_repeat_threshold,
+                                settings.loop_min_tail_match,
+                            )
+                            if loop_result:
+                                loop_triggered = True
+                                # Write to dedicated loop debug log file
+                                try:
+                                    log_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "logs")
+                                    os.makedirs(log_dir, exist_ok=True)
+                                    ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+                                    loop_log_path = os.path.join(log_dir, f"loop_debug_{ts}_{request_id[:8]}.json")
+                                    debug_entry = {
+                                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                                        "request_id": request_id,
+                                        "model": model,
+                                        "reason": loop_reason,
+                                        "window_size": len(loop_window),
+                                        "window": loop_window,
+                                        "last_10_chunks": loop_window[-10:],
+                                    }
+                                    with open(loop_log_path, "w", encoding="utf-8") as f:
+                                        json.dump(debug_entry, f, ensure_ascii=False, indent=2)
+                                    logger.error(
+                                        "LOOP DETECTED [%s] model=%s reason=%s window_size=%d "
+                                        "debug_log=%s auto_terminate=%s",
+                                        request_id[:8],
+                                        model,
+                                        loop_reason,
+                                        len(loop_window),
+                                        loop_log_path,
+                                        settings.loop_detection_enabled,
+                                    )
+                                except Exception as log_exc:
+                                    logger.error("LOOP DETECTED [%s] model=%s reason=%s log_write_failed=%s",
+                                                 request_id[:8], model, loop_reason, log_exc)
+
+                                # Only terminate the stream if loop_detection_enabled is True
+                                if settings.loop_detection_enabled:
+                                    queue.put_nowait(
+                                        json.dumps({"error": {"message": "model output loop detected, stream terminated", "type": "server_error", "code": 499}})
+                                    )
+                                    queue.put_nowait("[DONE]")
+                                    break
 
                         usage = chunk.get("usage")
                         if usage:
@@ -397,6 +968,12 @@ def _handle_streaming(
                 if was_cancelled:
                     record["status"] = "cancelled"
                     record["error_message"] = "cancelled by operator"
+                elif wall_clock_timed_out:
+                    record["status"] = "timeout"
+                    record["error_message"] = f"stream exceeded wall-clock timeout of {wall_clock_timeout}s"
+                elif loop_triggered:
+                    record["status"] = "loop_detected"
+                    record["error_message"] = "model output loop detected, stream terminated"
 
                 await _save_record(record, db_path)
                 logger.debug("PROXY [%s] stream saved to DB model=%s prompt=%s output=%s",
@@ -412,34 +989,140 @@ def _handle_streaming(
         """ASGI generator — reads from queue and yields SSE to client."""
         # Launch the upstream reader as a background task
         reader_task = asyncio.create_task(_upstream_reader())
-
+        
+        # State for Anthropic response transformation
+        anthro_first = True
+        anthro_usage: dict | None = None
+        
         try:
             while True:
                 try:
-                    # Use a short timeout so we can detect client disconnect
-                    # via CancelledError from ASGI
                     item = await asyncio.wait_for(queue.get(), timeout=1.0)
                 except asyncio.TimeoutError:
-                    # Check if reader task is done
                     if finished.is_set() or reader_task.done():
                         break
                     continue
-
+                
                 if item is None:
-                    # Error sentinel — stream ended abnormally
                     break
-
+                
                 if item == "[DONE]":
+                    # For Anthropic: emit final message_delta with usage
+                    if is_anthropic:
+                        msg_delta = {
+                            "type": "message_delta",
+                            "delta": {"stop_reason": "end_turn", "stop_sequence": None},
+                            "usage": {
+                                "input_tokens": (anthro_usage or {}).get("prompt_tokens", 0),
+                                "output_tokens": (anthro_usage or {}).get("completion_tokens", 0),
+                            },
+                        }
+                        yield f"data: {json.dumps(msg_delta)}\n\n"
                     yield "data: [DONE]\n\n"
                     break
-
+                
                 if item.startswith("{"):
                     # JSON error from upstream
                     yield f"data: {item}\n\n"
                     break
-
-                # Normal SSE line — item already contains "data: ..." from upstream
-                yield f"{item}\n\n"
+                
+                # Parse SSE line
+                if not item.startswith("data: "):
+                    yield f"{item}\n\n"
+                    continue
+                
+                data_str = item[6:]
+                if data_str.strip() == "[DONE]":
+                    if is_anthropic:
+                        msg_delta = {
+                            "type": "message_delta",
+                            "delta": {"stop_reason": "end_turn", "stop_sequence": None},
+                            "usage": {
+                                "input_tokens": (anthro_usage or {}).get("prompt_tokens", 0),
+                                "output_tokens": (anthro_usage or {}).get("completion_tokens", 0),
+                            },
+                        }
+                        yield f"data: {json.dumps(msg_delta)}\n\n"
+                    yield "data: [DONE]\n\n"
+                    break
+                
+                try:
+                    chunk = json.loads(data_str)
+                except json.JSONDecodeError:
+                    yield f"{item}\n\n"
+                    continue
+                
+                # Extract usage from chunk if present
+                if chunk.get("usage"):
+                    anthro_usage = chunk["usage"]
+                
+                # Transform for Anthropic clients
+                if is_anthropic:
+                    if anthro_first:
+                        # Emit message_start
+                        msg_start = {
+                            "type": "message_start",
+                            "message": {
+                                "id": chunk.get("id", ""),
+                                "type": "message",
+                                "role": "assistant",
+                                "model": chunk.get("model", ""),
+                                "content": [],
+                                "stop_reason": None,
+                                "stop_sequence": None,
+                                "usage": {"input_tokens": 0, "output_tokens": 0},
+                            },
+                        }
+                        yield f"data: {json.dumps(msg_start)}\n\n"
+                        
+                        # Emit content_block_start
+                        cb_start = {"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}}
+                        yield f"data: {json.dumps(cb_start)}\n\n"
+                        anthro_first = False
+                    
+                    # Emit content_block_delta for text content
+                    choice = (chunk.get("choices") or [{}])[0]
+                    delta = choice.get("delta") or {}
+                    text = delta.get("content") or ""
+                    reasoning = delta.get("reasoning") or ""
+                    if text:
+                        cb_delta = {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": text}}
+                        yield f"data: {json.dumps(cb_delta)}\n\n"
+                    elif reasoning:
+                        cb_delta = {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": reasoning}}
+                        yield f"data: {json.dumps(cb_delta)}\n\n"
+                    
+                    # Handle tool_calls in delta
+                    tool_calls = delta.get("tool_calls") or []
+                    for tc in tool_calls:
+                        func = tc.get("function") or {}
+                        yield f"data: {json.dumps({'type': 'content_block_start', 'index': 1, 'content_block': {'type': 'tool_use', 'id': tc.get('id', ''), 'name': func.get('name', ''), 'input': {}}})}\n\n"
+                        if func.get("arguments"):
+                            yield f"data: {json.dumps({'type': 'content_block_delta', 'index': 1, 'delta': {'type': 'input_json_delta', 'partial_json': func['arguments']}})}\n\n"
+                    
+                    # Check if this is the last chunk (has finish_reason)
+                    finish = choice.get("finish_reason")
+                    if finish:
+                        # Emit content_block_stop
+                        yield f"data: {json.dumps({'type': 'content_block_stop', 'index': 0})}\n\n"
+                        # Emit message_delta with usage
+                        msg_delta = {
+                            "type": "message_delta",
+                            "delta": {"stop_reason": "end_turn", "stop_sequence": None},
+                            "usage": {
+                                "input_tokens": (anthro_usage or {}).get("prompt_tokens", 0),
+                                "output_tokens": (anthro_usage or {}).get("completion_tokens", 0),
+                            },
+                        }
+                        yield f"data: {json.dumps(msg_delta)}\n\n"
+                        # Emit message_stop
+                        yield f"data: {json.dumps({'type': 'message_stop'})}\n\n"
+                        yield "data: [DONE]\n\n"
+                        break  # exit loop only on final chunk
+                    continue  # keep processing more chunks
+                else:
+                    # Normal SSE line — pass through
+                    yield f"{item}\n\n"
         except asyncio.CancelledError:
             # Client disconnected — signal reader to stop via cancel flag
             # (reader checks it each loop iteration and breaks naturally).

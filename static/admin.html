@@ -312,16 +312,26 @@ table tr:hover td { background: rgba(88,166,255,0.04); }
   // ---- Auth ----
 
   window.unlock = async function() {
-    var token = document.getElementById('adminTokenInput').value.trim();
-    if (!token) return;
+    var password = document.getElementById('adminTokenInput').value;
+    if (!password) return;
     try {
-      // Verify token by trying a create request — use HEAD to avoid side effects
-      // Actually, just list keys with admin header — if admin_token is set, list is public
-      // So we test by attempting to create then delete, or better: just trust the token
-      // and verify on first real action. But simpler: hit an endpoint that requires admin.
-      // Since GET /api/keys is public, we need another check.
-      // We'll just store the token and verify on first action.
-      adminToken = token;
+      var resp = await fetch('/api/auth/verify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password: password }),
+      });
+      var data = await resp.json();
+      if (resp.status === 403) {
+        document.getElementById('authError').textContent = '密码错误，请重新输入';
+        document.getElementById('authError').classList.remove('hidden');
+        return;
+      }
+      if (resp.status === 503) {
+        document.getElementById('authError').textContent = data.detail || '密码未配置，请联系管理员';
+        document.getElementById('authError').classList.remove('hidden');
+        return;
+      }
+      adminToken = data.token || '';
       document.getElementById('authGate').classList.add('hidden');
       document.getElementById('keyPanel').classList.remove('hidden');
       refreshKeys();
@@ -550,7 +560,7 @@ table tr:hover td { background: rgba(88,166,255,0.04); }
 
   async function refreshKeys() {
     try {
-      var resp = await fetch('/api/keys');
+      var resp = await fetch('/api/keys', { headers: apiHeaders() });
       var data = await resp.json();
       var keys = data.keys || [];
       keyMaskToId = {};

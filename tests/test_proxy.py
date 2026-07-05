@@ -1,10 +1,121 @@
 import pytest
 import pytest_asyncio
 import json
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 from httpx import ASGITransport, AsyncClient
 from vllm_metrics_proxy.main import create_app
 from vllm_metrics_proxy.db import init_db
+from vllm_metrics_proxy.proxy import _detect_loop
+from vllm_metrics_proxy.config import Settings
+
+
+# ---- Loop detection unit tests ----
+
+class TestDetectLoop:
+    """Unit tests for the _detect_loop helper."""
+
+    def _is_loop(self, window, repeat_threshold=3, min_tail_match=5):
+        """Helper: return just the bool from _detect_loop."""
+        result, _reason = _detect_loop(window, repeat_threshold, min_tail_match)
+        return result
+
+    def test_tail_match_identical_chunks(self):
+        """Last 5 chunks identical → loop detected."""
+        window = ["/////", "/////", "/////", "/////", "/////"]
+        assert self._is_loop(window) is True
+
+    def test_tail_match_not_enough_chunks(self):
+        """Fewer than min_tail_match → no loop."""
+        window = ["/////", "/////", "/////"]
+        assert self._is_loop(window) is False
+
+    def test_tail_match_different_chunks(self):
+        """Last 5 chunks not all identical → no tail-match."""
+        window = ["hello", "world", "foo", "bar", "baz"]
+        assert self._is_loop(window) is False
+
+    def test_chunk_repeat_detected(self):
+        """A substantial chunk (>=10 chars) repeated 3+ times in last 10 → loop."""
+        window = [
+            "let me think about", "let me think about", "let me think about",
+            "other", "more", "stuff", "here", "x", "y", "z",
+        ]
+        assert self._is_loop(window) is True
+
+    def test_single_char_tail_match(self):
+        """Single char repeated many times → detected by tail-match."""
+        window = ["/", "/", "/", "/", "/", "/", "/", "/", "/", "/"]
+        assert self._is_loop(window) is True
+
+    def test_normal_text_no_loop(self):
+        """Normal varied text should not trigger loop detection."""
+        window = [
+            "The", " quick", " brown", " fox", " jumps",
+            " over", " the", " lazy", " dog", "."
+        ]
+        assert self._is_loop(window) is False
+
+    def test_empty_window(self):
+        """Empty window → no loop."""
+        assert self._is_loop([]) is False
+
+    def test_empty_strings_in_window(self):
+        """All empty strings → no loop (tail[0] is falsy)."""
+        window = ["", "", "", "", ""]
+        assert self._is_loop(window) is False
+
+    def test_short_chunks_no_loop(self):
+        """Chunks all shorter than MIN_CHUNK_LEN=10 and no tail-match → no loop."""
+        window = ["a", "b", "c", "d", "e"]
+        assert self._is_loop(window) is False
+
+    def test_tail_match_with_one_different_falls_to_chunk_repeat(self):
+        """Last 5 chunks differ by one → tail-match fails, chunk-repeat catches it."""
+        window = [
+            "let me think about", "let me think about", "let me think about",
+            "let me think about", "different",
+        ]
+        # "let me think about" appears 4 times (>= threshold 3), len=17 (>= 10)
+        assert self._is_loop(window) is True
+
+    def test_tail_match_mixed_no_pattern(self):
+        """Mixed chunks that don't form a repeating pattern → no loop."""
+        window = ["hello", "world", "foo", "bar", "different"]
+        assert self._is_loop(window) is False
+
+    def test_long_repeating_phrase(self):
+        """Longer phrase like 'let me think' repeated → chunk-repeat detects."""
+        window = [
+            "let me think", "let me think", "let me think",
+            "a", "b", "c", "d", "e", "f", "g"
+        ]
+        assert self._is_loop(window) is True
+
+    def test_pure_whitespace_chunks_ignored(self):
+        """Pure whitespace chunks (indentation spaces/tabs) should not trigger loop."""
+        # Reproduces the real-world false positive from loop_debug_20260702_214839
+        window = [
+            " ", "0", ")", " {", "\n", "               ", " spawn",
+            "B", "ee", "();", "\n", "           ", " }",
+            "\n\n", "           ", " //", " Update",
+            " bullets", "\n", "           ",
+        ]
+        assert self._is_loop(window) is False
+
+    def test_pure_whitespace_tail_no_loop(self):
+        """Tail of identical whitespace-only chunks should not trigger."""
+        window = ["     ", "     ", "     ", "     ", "     "]
+        assert self._is_loop(window) is False
+
+    def test_pure_whitespace_mixed_with_content_no_loop(self):
+        """Whitespace chunks repeated alongside content → no false positive."""
+        window = [
+            "code line one", "     ", "code line two", "     ",
+            "code line three", "     ", "code line four", "     ",
+            "code line five", "     ",
+        ]
+        assert self._is_loop(window) is False
 
 
 @pytest_asyncio.fixture

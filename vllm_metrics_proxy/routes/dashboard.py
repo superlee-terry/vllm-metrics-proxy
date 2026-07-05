@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from starlette.responses import FileResponse, JSONResponse
 
 from vllm_metrics_proxy.auth import (
-    create_api_key, delete_api_key, list_api_keys, update_api_key,
-    verify_admin_token,
+    create_api_key, create_admin_token, delete_api_key, list_api_keys,
+    update_api_key, verify_admin_token,
 )
 from vllm_metrics_proxy.config import settings
 from vllm_metrics_proxy.db import get_requests, get_requests_count, get_key_names_by_ids, get_summary, get_summary_by_model
@@ -29,12 +29,32 @@ async def index():
 
 @router.get("/dashboard")
 async def dashboard():
-    return FileResponse("static/index.html")
+    return FileResponse("static/dashboard.html")
 
 
 @router.get("/admin")
 async def admin():
     return FileResponse("static/admin.html")
+
+
+@router.post("/api/auth/verify")
+async def verify_dashboard_password(request: Request):
+    """Verify the dashboard/admin password.
+
+    Returns 200 on match, 403 on mismatch, 503 if password not configured.
+    """
+    expected = request.app.state.settings.dashboard_password
+    if not expected:
+        return JSONResponse(
+            status_code=503,
+            content={"detail": "DASHBOARD_PASSWORD 未配置，请在环境变量中设置后重启服务"},
+        )
+    body = await request.json()
+    provided = body.get("password", "")
+    if provided != expected:
+        raise HTTPException(status_code=403, detail="密码错误")
+    token = create_admin_token(provided)
+    return {"status": "ok", "token": token}
 
 
 @router.get("/api/health")
@@ -43,7 +63,7 @@ async def health():
 
 
 @router.get("/api/summary")
-async def summary(request: Request, since: str = "1h"):
+async def summary(request: Request, since: str = "1h", _admin: None = Depends(verify_admin_token)):
     db_path = request.app.state.db_path
     since_hours = parse_since(since)
 
@@ -63,6 +83,7 @@ async def requests_list(
     since: str = "1h",
     limit: int = 50,
     offset: int = 0,
+    _admin: None = Depends(verify_admin_token),
 ):
     db_path = request.app.state.db_path
     since_hours = parse_since(since)
@@ -86,26 +107,26 @@ async def requests_list(
 
 
 @router.get("/api/gpu-stats")
-async def gpu_stats():
+async def gpu_stats(_admin: None = Depends(verify_admin_token)):
     """GPU temperature and utilization from nvidia-smi."""
     gpus = await fetch_gpu_stats()
     return {"gpus": gpus}
 
 
 @router.get("/api/engine-stats")
-async def engine_stats():
+async def engine_stats(_admin: None = Depends(verify_admin_token)):
     """Real-time vLLM engine stats from Prometheus /metrics."""
     return await fetch_engine_stats(settings.vllm_upstream)
 
 
 @router.get("/api/active-requests")
-async def active_requests():
+async def active_requests(_admin: None = Depends(verify_admin_token)):
     """List currently in-flight requests."""
     return {"requests": get_active_requests()}
 
 
 @router.post("/api/active-requests/{request_id}/cancel")
-async def cancel_request(request_id: str):
+async def cancel_request(request_id: str, _admin: None = Depends(verify_admin_token)):
     """Cancel an active request by ID. Returns 404 if not found."""
     from starlette.responses import JSONResponse
 
