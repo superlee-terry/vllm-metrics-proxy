@@ -7,6 +7,7 @@ from fastapi.staticfiles import StaticFiles
 from vllm_metrics_proxy.config import Settings, settings
 from vllm_metrics_proxy.db import init_db
 from vllm_metrics_proxy.config_manager import load_overrides_into_live
+from vllm_metrics_proxy import loop_rules
 from vllm_metrics_proxy.routes.proxy import router as proxy_router
 from vllm_metrics_proxy.routes.dashboard import router as dashboard_router
 
@@ -23,6 +24,11 @@ def create_app(settings_override: Settings | None = None, db_path: str | None = 
         from vllm_metrics_proxy.config import settings as _live
         if _settings is _live:
             await load_overrides_into_live(_db_path)
+        # Load the ordered loop-detection rule list (a separate module-level
+        # list in loop_rules, read by the streaming hot path).  This runs
+        # regardless of the settings gate because the hot path reads the
+        # loop_rules module-global, not app.state.settings.
+        await loop_rules.load_rules_from_db(_db_path)
         yield
 
     app = FastAPI(title="vLLM Metrics Proxy", lifespan=lifespan)

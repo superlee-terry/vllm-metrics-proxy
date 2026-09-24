@@ -50,24 +50,12 @@ CONFIG_ITEMS: dict[str, dict] = {
     },
     "loop_window_size": {
         "label": "滑动窗口大小", "type": "int", "min": 5, "max": 200,
-        "desc": "保留最近 N 个非空 chunk 用于循环检测",
+        "desc": "保留最近 N 个非空 chunk 用于循环检测（各规则在此窗口内自行判断）",
     },
-    "loop_repeat_threshold": {
-        "label": "整块重复阈值", "type": "int", "min": 2, "max": 20,
-        "desc": "同一 chunk 出现 N 次判定为循环",
-    },
-    "loop_min_tail_match": {
-        "label": "尾部全同阈值", "type": "int", "min": 3, "max": 20,
-        "desc": "最近 N 个 chunk 完全相同判定为循环",
-    },
-    "loop_punct_spam_min_chars": {
-        "label": "标点 spam 字符数阈值", "type": "int", "min": 5, "max": 200,
-        "desc": "尾部纯标点串总长度达到 N 字符即掐断（如 '!!!!!'x2 / '......'x2）",
-    },
-    "loop_punct_spam_min_chunks": {
-        "label": "标点 spam chunk 数阈值", "type": "int", "min": 3, "max": 100,
-        "desc": "连续 N 个纯标点 chunk 即掐断（适配一行一个标点的循环，如 '、'x6）",
-    },
+    # NOTE: the per-rule thresholds (tail_match / chunk_repeat / punct_spam)
+    # are no longer global scalars — they live inside the ordered loop-rules
+    # list (the "循环检测规则" section of this page, backed by the `loop_rules`
+    # row in the settings table).
     # Timeouts
     "request_timeout_seconds": {
         "label": "总时长上限(秒)", "type": "float", "min": 30, "max": 3600,
@@ -247,6 +235,8 @@ async def load_overrides_into_live(db_path: str) -> None:
     stored = await _db.get_all_settings(db_path)
     for key, raw in stored.items():
         if _item(key) is None:
+            # Keys we no longer manage as scalars — notably ``loop_rules``,
+            # which is a JSON list handled by ``loop_rules.load_rules_from_db``.
             continue  # ignore keys we no longer manage
         try:
             value = _value_from_text(raw)

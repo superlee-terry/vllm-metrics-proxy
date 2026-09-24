@@ -50,11 +50,41 @@ select.field { background:var(--bg-tertiary); border:1px solid var(--border); co
 .badge.db { color:var(--yellow); border-color:var(--yellow); }
 .badge.env { color:var(--accent); border-color:var(--accent); }
 .badge.def { color:var(--text-muted); border-color:var(--border); }
+.badge.type { color:var(--green); border-color:var(--green); font-family:var(--font-mono); }
 .actions { display:flex; gap:6px; }
 .flash { position:fixed; top:20px; left:50%; transform:translateX(-50%); background:var(--bg-tertiary); border:1px solid var(--green); color:var(--green); padding:10px 20px; border-radius:6px; font-size:13px; opacity:0; transition:opacity .3s; pointer-events:none; z-index:200; }
 .flash.err { border-color:var(--red); color:var(--red); }
 .flash.show { opacity:1; }
 .hidden { display:none !important; }
+/* Loop rules list */
+.rule-card { background:var(--bg-secondary); border:1px solid var(--border); border-radius:var(--card-radius); padding:12px 14px; margin-bottom:10px; }
+.rule-card.disabled { opacity:.5; }
+.rule-head { display:flex; align-items:center; gap:10px; margin-bottom:10px; }
+.rule-head .idx { font-family:var(--font-mono); font-size:12px; color:var(--text-muted); width:24px; text-align:center; }
+.rule-head .rtype { font-weight:600; }
+.rule-head .rdesc { font-size:12px; color:var(--text-muted); flex:1; }
+.rule-head .rstatus { font-size:11px; padding:2px 8px; border-radius:10px; border:1px solid var(--border); }
+.rule-head .rstatus.on { color:var(--green); border-color:var(--green); }
+.rule-head .rstatus.off { color:var(--text-muted); }
+.rule-params { display:flex; flex-wrap:wrap; gap:8px 16px; padding:8px 0; margin-left:34px; }
+.rule-params .p { display:flex; align-items:center; gap:6px; }
+.rule-params .p label { font-size:12px; color:var(--text-secondary); }
+.rule-params .p input { width:70px; background:var(--bg-tertiary); border:1px solid var(--border); color:var(--text-primary); padding:4px 8px; border-radius:4px; font-size:13px; font-family:var(--font-mono); outline:none; }
+.rule-params .p input:focus { border-color:var(--accent); }
+.rule-foot { display:flex; gap:6px; padding-top:6px; margin-left:34px; }
+.rules-toolbar { display:flex; gap:8px; align-items:center; margin-bottom:12px; }
+.rules-toolbar select { background:var(--bg-tertiary); border:1px solid var(--border); color:var(--text-primary); padding:6px 10px; border-radius:5px; font-size:13px; }
+.rules-toolbar .hint { font-size:12px; color:var(--text-muted); margin-left:auto; }
+.empty-rules { color:var(--text-muted); font-size:13px; padding:12px; border:1px dashed var(--border); border-radius:var(--card-radius); }
+/* Char-set editor (punct_spam chars param) */
+.charset { display:flex; flex-wrap:wrap; gap:6px; align-items:center; padding:6px 0 6px 0; margin-left:34px; border-top:1px dashed var(--border); margin-top:4px; }
+.charset .cs-label { font-size:12px; color:var(--text-secondary); margin-right:4px; }
+.charset .chip { display:inline-flex; align-items:center; gap:4px; background:var(--bg-tertiary); border:1px solid var(--border); border-radius:5px; padding:2px 8px; font-family:var(--font-mono); font-size:14px; color:var(--text-primary); }
+.charset .chip .x { cursor:pointer; color:var(--text-muted); font-size:12px; line-height:1; padding:0 2px; }
+.charset .chip .x:hover { color:var(--red); }
+.charset .add-wrap { display:inline-flex; align-items:center; gap:4px; margin-left:6px; }
+.charset .add-wrap input { width:110px; background:var(--bg-tertiary); border:1px solid var(--border); color:var(--text-primary); padding:3px 8px; border-radius:4px; font-size:13px; font-family:var(--font-mono); outline:none; }
+.charset .add-wrap input:focus { border-color:var(--accent); }
 </style>
 </head>
 <body>
@@ -81,7 +111,21 @@ select.field { background:var(--bg-tertiary); border:1px solid var(--border); co
       修改后 <b>立即生效</b>，无需重启服务；同时持久化到 <code>metrics.db</code>，服务重启后自动恢复。<br>
       每个配置项旁有「来源」标签：<b>数据库</b>=你手动改过的值，<b>环境变量</b>=由部署 env 设定，<b>默认值</b>=代码内置值。「恢复默认」将该项清除回代码默认值。
     </div>
-    <div id="configList"><div class="empty-state" style="color:var(--text-muted);padding:20px;">加载中…</div></div>
+    <div id="configList"><div style="color:var(--text-muted);padding:20px;">加载中…</div></div>
+
+    <div class="section-title" style="margin-top:28px;">🧩 循环检测规则 <span style="font-size:12px;color:var(--text-muted);font-weight:400;">（按优先级顺序执行，命中即掐断；可增删改 / 调序 / 启停）</span></div>
+    <div class="banner" style="margin-bottom:12px;">
+      规则从上到下依次评估，<b>第一条命中</b>即触发掐断（顺序即优先级）。<br>
+      每条规则带独立阈值；「启用」开关可临时停用某条规则而不删除它。
+      修改后<b>立即生效</b>并持久化到 <code>metrics.db</code>，重启后自动恢复。
+    </div>
+    <div class="rules-toolbar">
+      <button class="btn-sm" onclick="addRule()">＋ 添加规则</button>
+      <select id="addRuleType" onchange="addRuleSelect()"></select>
+      <button class="btn-sm danger" onclick="resetRules()">恢复出厂规则</button>
+      <span class="hint">添加后自动置于列表末尾（最低优先级）</span>
+    </div>
+    <div id="rulesList"></div>
   </div>
 </div>
 <div class="flash" id="flash"></div>
@@ -89,7 +133,8 @@ select.field { background:var(--bg-tertiary); border:1px solid var(--border); co
 <script>
 'use strict';
 var adminToken = '';
-var state = null; // {key: {...}}
+var configState = null;
+var rulesData = null;  // {rules: [...], types: {...}}
 
 function $(id) { return document.getElementById(id); }
 
@@ -123,7 +168,7 @@ window.unlock = async function() {
     adminToken = data.token || '';
     $('authGate').classList.add('hidden');
     $('configPanel').classList.remove('hidden');
-    loadConfig();
+    loadAll();
   } catch(e) {
     $('authError').textContent = '验证失败';
   }
@@ -150,28 +195,45 @@ async function apiFetch(url, options) {
   return data;
 }
 
+async function loadAll() {
+  await Promise.all([loadConfig(), loadRules()]);
+}
+
 async function loadConfig() {
   try {
     var data = await apiFetch('/api/config', { headers: apiHeaders() });
-    state = data.settings;
-    render();
+    configState = data.settings;
+    renderConfig();
   } catch(e) {
     if (e.message !== 'Admin token invalid') $('configList').innerHTML = '<div style="color:var(--red);padding:16px;">加载失败: ' + e.message + '</div>';
   }
 }
 
-function esc(s) { return String(s).replace(/[&<>"]/g, function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]; }); }
+async function loadRules() {
+  try {
+    rulesData = await apiFetch('/api/loop-rules', { headers: apiHeaders() });
+    populateAddTypeSelect();
+    renderRules();
+  } catch(e) {
+    if (e.message !== 'Admin token invalid') $('rulesList').innerHTML = '<div style="color:var(--red);padding:16px;">加载规则失败: ' + e.message + '</div>';
+  }
+}
 
-function render() {
+function esc(s) { return String(s).replace(/[&<>\"]/g, function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;'}[c]; }); }
+
+// ---- Config scalars rendering ----
+
+function renderConfig() {
+  if (!configState) return;
   var groups = [
-    { title: '🔁 循环检测', keys: ['loop_detection_enabled','loop_window_size','loop_repeat_threshold','loop_min_tail_match','loop_punct_spam_min_chars','loop_punct_spam_min_chunks'] },
+    { title: '🔁 循环检测', keys: ['loop_detection_enabled','loop_window_size'] },
     { title: '⏱️ 超时控制', keys: ['request_timeout_seconds','stream_idle_timeout'] },
   ];
   var html = '';
   groups.forEach(function(g) {
     html += '<div class="section-title">' + esc(g.title) + '</div>';
     g.keys.forEach(function(key) {
-      var s = state[key];
+      var s = configState[key];
       if (!s) return;
       var sourceClass = s.source === '数据库' ? 'db' : (s.source === '环境变量' ? 'env' : 'def');
       var isOverridden = s.source === '数据库';
@@ -208,7 +270,7 @@ function render() {
 }
 
 async function saveKey(key) {
-  var s = state[key];
+  var s = configState[key];
   var raw = $('field_' + key).value;
   var value;
   if (s.type === 'bool') {
@@ -218,9 +280,9 @@ async function saveKey(key) {
   } else {
     value = parseFloat(raw);
   }
-  if (isNaN(value)) { flash('请输入有效数值', true); return; }
+  if (isNaN(value) && s.type !== 'bool') { flash('请输入有效数值', true); return; }
   try {
-    var res = await apiFetch('/api/config', {
+    await apiFetch('/api/config', {
       method: 'PUT', headers: apiHeaders(),
       body: JSON.stringify({ [key]: value }),
     });
@@ -232,7 +294,7 @@ async function saveKey(key) {
 }
 
 async function revertKey(key) {
-  var s = state[key];
+  var s = configState[key];
   if (!confirm('将「' + s.label + '」恢复为默认值 ' + s.default + ' 并立即生效？')) return;
   try {
     await apiFetch('/api/config', {
@@ -243,6 +305,218 @@ async function revertKey(key) {
     await loadConfig();
   } catch(e) {
     if (e.message !== 'Admin token invalid') flash('恢复失败: ' + e.message, true);
+  }
+}
+
+// ---- Loop rules rendering ----
+
+function populateAddTypeSelect() {
+  var sel = $('addRuleType');
+  sel.innerHTML = '';
+  Object.keys(rulesData.types).forEach(function(t) {
+    var opt = document.createElement('option');
+    opt.value = t;
+    opt.textContent = rulesData.types[t].label + ' (' + t + ')';
+    sel.appendChild(opt);
+  });
+}
+
+function renderRules() {
+  var list = $('rulesList');
+  var rules = rulesData.rules;
+  if (!rules.length) {
+    list.innerHTML = '<div class="empty-rules">暂无规则 — 点击上方「添加规则」创建</div>';
+    return;
+  }
+  var html = '';
+  rules.forEach(function(r, idx) {
+    var t = rulesData.types[r.type];
+    if (!t) {
+      html += '<div class="rule-card"><div class="rule-head"><span class="idx">' + (idx+1) + '</span><span class="rtype">' + esc(r.type) + ' (未知)</span><span class="rdesc">此规则类型不存在，请删除</span></div></div>';
+      return;
+    }
+    html += '<div class="rule-card' + (r.enabled ? '' : ' disabled') + '" data-idx="' + idx + '">';
+    // Header
+    html += '<div class="rule-head">';
+    html += '<span class="idx">' + (idx+1) + '</span>';
+    html += '<span class="badge type">' + esc(r.type) + '</span>';
+    html += '<span class="rstatus ' + (r.enabled ? 'on' : 'off') + '">' + (r.enabled ? '启用' : '停用') + '</span>';
+    html += '<span class="rdesc">' + esc(t.desc) + '</span>';
+    html += '</div>';
+    // Params
+    var paramsHtml = '<div class="rule-params">';
+    var hasChars = false;
+    Object.keys(t.params).forEach(function(pk) {
+      var ps = t.params[pk];
+      if (ps.type === 'chars') { hasChars = true; return; }  // rendered below as a char-set editor
+      var val = (r.params && r.params[pk] != null) ? r.params[pk] : ps.default;
+      paramsHtml += '<div class="p"><label>' + esc(ps.label) + ' <small>(' + pk + ')</small></label>' +
+        '<input type="number" id="rp_' + idx + '_' + pk + '" value="' + esc(val) + '" min="' + (ps.min || 1) + '" max="' + (ps.max || 999) + '">' +
+        '</div>';
+    });
+    paramsHtml += '</div>';
+    html += paramsHtml;
+    // Char-set editor (punct_spam chars)
+    if (hasChars) {
+      var ps = t.params.chars;
+      var val = (r.params && r.params.chars != null) ? r.params.chars : ps.default;
+      html += '<div class="charset" data-idx="' + idx + '">';
+      html += '<span class="cs-label">' + esc(ps.label) + '（点 × 删除，输入后添加；保存后生效）</span>';
+      Array.from(val).forEach(function(ch) {
+        html += '<span class="chip">' + esc(ch) + '<span class="x" onclick="removeChar(' + idx + ', ' + ch.charCodeAt(0) + ')">×</span></span>';
+      });
+      html += '<span class="add-wrap"><input type="text" id="addchar_' + idx + '" placeholder="输入标点" maxlength="1">' +
+        '<button class="btn-sm" onclick="addChars(' + idx + ')">添加</button></span>';
+      html += '</div>';
+    }
+    // Footer
+    html += '<div class="rule-foot">';
+    html += '<button class="btn-sm" onclick="moveRule(' + idx + ',-1)">↑ 上移</button>';
+    html += '<button class="btn-sm" onclick="moveRule(' + idx + ',1)">↓ 下移</button>';
+    html += '<button class="btn-sm" onclick="toggleRule(' + idx + ')">' + (r.enabled ? '停用' : '启用') + '</button>';
+    html += '<button class="btn-sm" onclick="saveRule(' + idx + ')">保存</button>';
+    html += '<button class="btn-sm danger" onclick="deleteRule(' + idx + ')">删除</button>';
+    html += '</div>';
+    html += '</div>';
+  });
+  list.innerHTML = html;
+}
+
+window.addRule = function() {
+  var type = $('addRuleType').value;
+  if (!type) { flash('请先选择规则类型', true); return; }
+  addRuleByType(type);
+};
+
+window.addRuleSelect = function() {
+  var type = $('addRuleType').value;
+  if (!type) return;
+  addRuleByType(type);
+};
+
+async function addRuleByType(type) {
+  var t = rulesData.types[type];
+  if (!t) return;
+  var params = {};
+  Object.keys(t.params).forEach(function(pk) { params[pk] = t.params[pk].default; });
+  var newRule = {
+    rule_id: type + '_' + Date.now().toString(36),
+    type: type,
+    enabled: true,
+    params: params,
+  };
+  rulesData.rules.push(newRule);
+  await persistRules();
+  flash('已添加规则：' + t.label + '（置于末尾，最低优先级）');
+}
+
+window.moveRule = async function(idx, dir) {
+  var rules = rulesData.rules;
+  var target = idx + dir;
+  if (target < 0 || target >= rules.length) return;
+  // swap
+  var tmp = rules[idx];
+  rules[idx] = rules[target];
+  rules[target] = tmp;
+  await persistRules();
+};
+
+window.toggleRule = async function(idx) {
+  var rules = rulesData.rules;
+  rules[idx].enabled = !rules[idx].enabled;
+  await persistRules();
+};
+
+window.saveRule = async function(idx) {
+  var r = rulesData.rules[idx];
+  var t = rulesData.types[r.type];
+  if (!t) { flash('未知规则类型', true); return; }
+  var params = {};
+  Object.keys(t.params).forEach(function(pk) {
+    var ps = t.params[pk];
+    if (ps.type === 'chars') {
+      // chars is maintained in r.params.chars by addChars/removeChar (live).
+      params[pk] = (r.params && r.params.chars != null) ? r.params.chars : ps.default;
+      return;
+    }
+    var el = $('rp_' + idx + '_' + pk);
+    if (el) params[pk] = parseInt(el.value, 10);
+  });
+  r.params = params;
+  await persistRules();
+  flash('规则已保存（立即生效）');
+};
+
+// ---- Char-set editor handlers --------------------------------------------
+// The current set is kept in rulesData.rules[idx].params.chars (a string of
+// distinct chars).  addChars/removeChar mutate it in place and re-render; the
+// user then clicks 保存 to apply + persist.
+
+function charsetOf(idx) {
+  var r = rulesData.rules[idx];
+  var t = rulesData.types[r.type];
+  var def = (t && t.params.chars) ? t.params.chars.default : '';
+  if (!r.params || r.params.chars == null) r.params = r.params || {}, r.params.chars = def;
+  return r.params.chars;
+}
+
+window.addChars = function(idx) {
+  var input = $('addchar_' + idx);
+  var t = rulesData.types[rulesData.rules[idx].type];
+  var max = (t.params.chars && t.params.chars.max) || 200;
+  var cur = charsetOf(idx);
+  var seen = {};
+  cur.split('').forEach(function(c){ seen[c]=1; });
+  var added = 0;
+  Array.from(input.value).forEach(function(c) {
+    if (c.trim() === '' ) return;
+    if (!seen[c]) { seen[c]=1; cur += c; added++; }
+  });
+  if (cur.length > max) { flash('字符过多（上限 ' + max + '）', true); return; }
+  if (cur.length < 1) { flash('至少保留 1 个字符', true); return; }
+  rulesData.rules[idx].params.chars = cur;
+  if (added === 0) { flash('没有新字符（均已存在或为空）', true); }
+  else flash('已添加 ' + added + ' 个字符 — 点「保存」生效');
+  renderRules();
+};
+
+window.removeChar = function(idx, code) {
+  var ch = String.fromCharCode(code);
+  var cur = charsetOf(idx).split('').filter(function(c){ return c !== ch; }).join('');
+  if (cur.length < 1) { flash('至少保留 1 个字符', true); return; }
+  rulesData.rules[idx].params.chars = cur;
+  renderRules();
+  flash('已移除 ' + ch + ' — 点「保存」生效');
+};
+
+window.deleteRule = async function(idx) {
+  var r = rulesData.rules[idx];
+  if (!confirm('确认删除规则「' + r.type + '」？此操作不可撤销。')) return;
+  rulesData.rules.splice(idx, 1);
+  await persistRules();
+  flash('规则已删除');
+};
+
+window.resetRules = async function() {
+  if (!confirm('恢复出厂规则？当前所有自定义规则将被清除。')) return;
+  try {
+    await apiFetch('/api/loop-rules/reset', { method: 'POST', headers: apiHeaders() });
+    await loadRules();
+    flash('已恢复出厂规则');
+  } catch(e) {
+    if (e.message !== 'Admin token invalid') flash('恢复失败: ' + e.message, true);
+  }
+};
+
+async function persistRules() {
+  try {
+    await apiFetch('/api/loop-rules', {
+      method: 'PUT', headers: apiHeaders(),
+      body: JSON.stringify(rulesData.rules),
+    });
+    await loadRules();
+  } catch(e) {
+    if (e.message !== 'Admin token invalid') flash('保存规则失败: ' + e.message, true);
   }
 }
 </script>

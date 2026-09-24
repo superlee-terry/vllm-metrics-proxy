@@ -7,33 +7,43 @@ from vllm_metrics_proxy.config import settings
 
 
 def test_tail_match():
-    """Strategy 1: last 5 chunks identical -> loop detected."""
-    window = ["abc"] * 5
+    """Strategy 1: last 5 chunks identical -> loop detected.
+
+    Note: chunks must satisfy the per-chunk floor (>=5 chars, >=2 distinct
+    chars) — a 3-char chunk can never match.
+    """
+    window = ["hello wo"] * 5
     result, reason = _detect_loop(window, repeat_threshold=3, min_tail_match=5)
     assert result is True, f"Expected True, got {result}"
     assert "tail_match" in reason, f"Reason should contain tail_match: {reason}"
     print(f"  PASS: tail_match -> {reason[:80]}")
 
 
-def test_chunk_repeat_exact():
-    """Strategy 2: same chunk (>=10 chars) appears 3x -> loop detected."""
+def test_chunk_repeat_dense():
+    """Strategy 2: a long chunk repeated densely (high count, small gaps) -> loop.
+
+    The detector uses a *density* heuristic: a >=min_len chunk that appears
+    many times with small gaps (a real loop) triggers, while the same chunk
+    sprinkled sparsely through a long window (e.g. enumeration) does not.
+    """
     chunk = "这是一个重复的输出片段"
-    window = [
-        "intro_text",
-        chunk,
-        "some_other_stuff",
-        chunk,
-        "filler_12345678",
-        chunk,
-        "end_1",
-        "end_2",
-        "end_3",
-        "end_4",
-    ]
+    window = ["a", chunk, chunk, chunk, chunk, "b"]  # 4 dense occurrences
     result, reason = _detect_loop(window, repeat_threshold=3, min_tail_match=5)
     assert result is True, f"Expected True, got {result}, reason={reason}"
     assert "chunk_repeat" in reason, f"Reason should contain chunk_repeat: {reason}"
-    print(f"  PASS: chunk_repeat -> {reason[:80]}")
+    print(f"  PASS: chunk_repeat dense -> {reason[:80]}")
+
+
+def test_chunk_repeat_sparse_not_triggered():
+    """Same long chunk, but sprinkled sparsely -> NOT a loop (enumeration)."""
+    chunk = "这是一个重复的输出片段"
+    window = [
+        "intro", chunk, "o1", "o2", "o3", "o4", "o5", "o6", "o7", chunk,
+        "o8", "o9", "o10", "o11", "o12", "o13", "o14", "o15", "o16", "o17", chunk,
+    ]
+    result, reason = _detect_loop(window, repeat_threshold=3, min_tail_match=5)
+    assert result is False, f"Sparsely-repeated chunk should not trigger: {reason}"
+    print(f"  PASS: chunk_repeat sparse -> no loop")
 
 
 def test_no_loop_diverse():
@@ -53,14 +63,16 @@ def test_window_too_small():
 
 
 def test_short_chunks_not_triggering():
-    """Short chunks (<20 chars) should NOT trigger chunk_repeat."""
-    # All chunks are short — should not trigger strategy 2
-    # Strategy 1 (tail_match) will trigger since last 5 are identical
+    """Short chunks (< min_len) should NOT trigger tail_match.
+
+    A 2-char chunk can never satisfy the >=5-char per-chunk floor, so even
+    15 identical ones must NOT be flagged (prevents false loops on tiny
+    token-level chunks like 'ab', '、', etc.).
+    """
     window = ["ab"] * 15
     result, reason = _detect_loop(window, repeat_threshold=3, min_tail_match=5)
-    assert result is True  # tail_match catches identical short chunks
-    assert "tail_match" in reason
-    print(f"  PASS: short_chunks_tail -> {reason[:80]}")
+    assert result is False, f"2-char chunks should not trigger tail_match: {reason}"
+    print(f"  PASS: short_chunks_not_triggered -> no loop")
 
 
 def test_thinking_like_pattern_not_triggering():
@@ -186,7 +198,8 @@ def test_punctuation_spam_not_triggered():
 if __name__ == "__main__":
     print("Running loop detection tests...\n")
     test_tail_match()
-    test_chunk_repeat_exact()
+    test_chunk_repeat_dense()
+    test_chunk_repeat_sparse_not_triggered()
     test_no_loop_diverse()
     test_window_too_small()
     test_short_chunks_not_triggering()

@@ -8,6 +8,7 @@ from vllm_metrics_proxy.auth import (
     update_api_key, verify_admin_token,
 )
 from vllm_metrics_proxy.config import settings
+from vllm_metrics_proxy import loop_rules
 from vllm_metrics_proxy.config_manager import (
     CONFIG_ITEMS, get_state, persist_changes, revert_to_default, validate_payload,
 )
@@ -247,4 +248,57 @@ async def put_config(request: Request, _admin: None = Depends(verify_admin_token
         "status": "ok",
         "updated": sorted(cleaned),
         "reverted": reverts,
+    }
+
+
+# ---- Loop-detection rules — ordered, DB-backed list (live) --------------
+
+@router.get("/api/loop-rules")
+async def get_loop_rules(_admin: None = Depends(verify_admin_token)):
+    """Current ordered rule list + the schema for each known rule type.
+
+    ``rules`` is the live list in priority order (earlier = higher priority).
+    ``types`` lets the page render param editors / validation per rule type.
+    """
+    return {
+        "rules": loop_rules.get_live_rules(),
+        "types": loop_rules.RULE_TYPES,
+    }
+
+
+@router.put("/api/loop-rules")
+async def put_loop_rules(request: Request, _admin: None = Depends(verify_admin_token)):
+    """Replace the whole ordered rule list (add / edit / delete / reorder).
+
+    The page sends the complete list it has rendered, so a single PUT covers
+    every mutation.  Each item: ``{"rule_id", "type", "enabled", "params"}``.
+    Applied live (no restart) and persisted to the settings table.
+    """
+    body = await request.json()
+    if not isinstance(body, list):
+        return JSONResponse(status_code=400, content={"detail": "body must be a list of rules"})
+    try:
+        normalised = await loop_rules.apply_rules(request.app.state.db_path, body)
+    except ValueError as e:
+        return JSONResponse(status_code=422, content={"detail": str(e)})
+    return {
+        "status": "ok",
+        "count": len(normalised),
+        "rules": normalised,
+    }
+
+
+@router.post("/api/loop-rules/reset")
+async def reset_loop_rules(request: Request, _admin: None = Depends(verify_admin_token)):
+    """Restore the factory-default rules (tail_match / chunk_repeat / punct_spam)."""
+    try:
+        normalised = await loop_rules.apply_rules(
+            request.app.state.db_path, loop_rules.default_rules()
+        )
+    except ValueError as e:
+        return JSONResponse(status_code=422, content={"detail": str(e)})
+    return {
+        "status": "ok",
+        "count": len(normalised),
+        "rules": normalised,
     }
