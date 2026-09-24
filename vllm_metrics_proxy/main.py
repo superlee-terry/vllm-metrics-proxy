@@ -6,6 +6,7 @@ from fastapi.staticfiles import StaticFiles
 
 from vllm_metrics_proxy.config import Settings, settings
 from vllm_metrics_proxy.db import init_db
+from vllm_metrics_proxy.config_manager import load_overrides_into_live
 from vllm_metrics_proxy.routes.proxy import router as proxy_router
 from vllm_metrics_proxy.routes.dashboard import router as dashboard_router
 
@@ -17,6 +18,11 @@ def create_app(settings_override: Settings | None = None, db_path: str | None = 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         await init_db(_db_path)
+        # Apply DB-persisted runtime config overrides to the live settings object
+        # (the hot path in proxy.py reads the module-level `settings`).
+        from vllm_metrics_proxy.config import settings as _live
+        if _settings is _live:
+            await load_overrides_into_live(_db_path)
         yield
 
     app = FastAPI(title="vLLM Metrics Proxy", lifespan=lifespan)

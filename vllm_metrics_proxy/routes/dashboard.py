@@ -8,6 +8,9 @@ from vllm_metrics_proxy.auth import (
     update_api_key, verify_admin_token,
 )
 from vllm_metrics_proxy.config import settings
+from vllm_metrics_proxy.config_manager import (
+    CONFIG_ITEMS, get_state, persist_changes, revert_to_default, validate_payload,
+)
 from vllm_metrics_proxy.db import get_requests, get_requests_count, get_key_names_by_ids, get_summary, get_summary_by_model
 from vllm_metrics_proxy.metrics import parse_since
 from vllm_metrics_proxy.gpu_stats import fetch_gpu_stats
@@ -35,6 +38,11 @@ async def dashboard():
 @router.get("/admin")
 async def admin():
     return FileResponse("static/admin.html")
+
+
+@router.get("/config")
+async def config_page():
+    return FileResponse("static/config.html")
 
 
 @router.post("/api/auth/verify")
@@ -196,3 +204,47 @@ async def patch_key(request: Request, key_id: str, _admin: None = Depends(verify
     if not updated:
         return JSONResponse(status_code=404, content={"detail": "API key not found"})
     return {"status": "updated", "key_id": key_id}
+
+
+# ---- Runtime config (loop detection / timeouts) — live-editable ----
+
+@router.get("/api/config")
+async def get_config(request: Request, _admin: None = Depends(verify_admin_token)):
+    """Current config state: effective value, code default, DB override, source."""
+    return await get_state(request.app.state.db_path)
+
+
+@router.put("/api/config")
+async def put_config(request: Request, _admin: None = Depends(verify_admin_token)):
+    """Update one or more config keys. Validates, persists to DB, applies live.
+
+    Body: {"<key>": value, ...}.  A key set to ``null`` reverts it to the
+    code default.  Changes take effect immediately (no restart).
+    """
+    body = await request.json()
+    if not isinstance(body, dict) or not body:
+        return JSONResponse(status_code=400, content={"detail": "empty or invalid body"})
+
+    # Separate nulls (revert) from concrete values (set).
+    reverts = [k for k, v in body.items() if v is None]
+    sets = {k: v for k, v in body.items() if v is not None}
+
+    try:
+        cleaned = validate_payload(sets) if sets else {}
+    except ValueError as e:
+        return JSONResponse(status_code=422, content={"detail": str(e)})
+
+    db_path = request.app.state.db_path
+    for key in reverts:
+        if key not in CONFIG_ITEMS:
+            return JSONResponse(status_code=422, content={"detail": f"未知配置项: {key}"})
+        await revert_to_default(db_path, key)
+
+    if cleaned:
+        await persist_changes(db_path, cleaned)
+
+    return {
+        "status": "ok",
+        "updated": sorted(cleaned),
+        "reverted": reverts,
+    }

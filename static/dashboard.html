@@ -274,6 +274,7 @@ table tr:hover td { background: rgba(88, 166, 255, 0.04); }
 
 .status-ok { color: var(--green); font-weight: 600; }
 .status-err { color: var(--red); font-weight: 600; cursor: help; }
+.status-abort { color: var(--orange); font-weight: 600; cursor: help; }
 .na { color: var(--text-muted); }
 
 .cached-hit { color: var(--green); }
@@ -433,6 +434,7 @@ table tr:hover td { background: rgba(88, 166, 255, 0.04); }
         <option value="30m">30 分钟</option>
         <option value="1h">1 小时</option>
       </select>
+      <a href="/config" style="color:var(--accent);margin-left:12px;text-decoration:none;font-size:13px;">⚙️ 配置维护</a>
     </div>
   </div>
 
@@ -839,7 +841,17 @@ table tr:hover td { background: rgba(88, 166, 255, 0.04); }
       var statusHtml;
       if (isError) {
         var errTitle = r.error_message ? escapeHtml(r.error_message) : 'Error';
-        statusHtml = '<span class="status-err" title="' + errTitle + '">&#x2717;</span>';
+        var isCancelled = (r.status === 'cancelled');
+        var isAbort = (r.status === 'timeout' || r.status === 'loop_detected');
+        if (isCancelled) {
+          statusHtml = '<span class="status-err" title="' + errTitle + '">&times;</span>';
+        } else if (isAbort) {
+          statusHtml = '<span class="status-abort" title="' + errTitle + '">&#124;&#124;</span>';
+        } else if (isCancelled) {
+          statusHtml = '<span class="status-err" title="' + errTitle + '">&times;</span>';
+        } else {
+          statusHtml = '<span class="status-err" title="' + errTitle + '">&times;</span>';
+        }
       } else {
         statusHtml = '<span class="status-ok">&#x2713;</span>';
       }

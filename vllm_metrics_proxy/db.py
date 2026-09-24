@@ -38,6 +38,16 @@ CREATE TABLE IF NOT EXISTS api_keys (
     enabled     INTEGER NOT NULL DEFAULT 1
 );
 CREATE INDEX IF NOT EXISTS idx_api_keys_expired_at ON api_keys(expired_at);
+
+-- Runtime-configurable settings (loop detection / timeouts). Values are stored
+-- as text (JSON) so one column holds int/float/bool/str uniformly. Overriding
+-- a key here takes effect immediately (applied to the live `settings` object);
+-- deleting a row reverts that key to its code/env default.
+CREATE TABLE IF NOT EXISTS settings (
+    key         TEXT PRIMARY KEY,
+    value       TEXT NOT NULL,
+    updated_at  TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
+);
 """
 
 INSERT_SQL = """
@@ -135,6 +145,45 @@ async def get_key_names_by_ids(db_path: str, key_ids: list[str]) -> dict[str, st
         ) as cur:
             rows = await cur.fetchall()
             return {r["id"]: r["name"] for r in rows}
+
+
+# ---- Runtime settings store (loop detection / timeouts) ----
+
+async def get_all_settings(db_path: str) -> dict[str, str]:
+    """Return {key: raw_value_text} for all stored runtime settings."""
+    async with aiosqlite.connect(db_path) as conn:
+        async with conn.execute("SELECT key, value FROM settings") as cur:
+            rows = await cur.fetchall()
+            return {r[0]: r[1] for r in rows}
+
+
+async def get_setting(db_path: str, key: str) -> str | None:
+    """Return the raw value text for a single setting key, or None."""
+    async with aiosqlite.connect(db_path) as conn:
+        async with conn.execute(
+            "SELECT value FROM settings WHERE key = ?", (key,)
+        ) as cur:
+            row = await cur.fetchone()
+            return row[0] if row else None
+
+
+async def upsert_setting(db_path: str, key: str, value_text: str) -> None:
+    """Insert or replace a runtime setting value."""
+    async with aiosqlite.connect(db_path) as conn:
+        await conn.execute(
+            "INSERT INTO settings (key, value, updated_at) VALUES (?, ?, datetime('now', 'localtime')) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now', 'localtime')",
+            (key, value_text),
+        )
+        await conn.commit()
+
+
+async def delete_setting(db_path: str, key: str) -> bool:
+    """Delete a runtime setting (revert to default). Returns True if a row was removed."""
+    async with aiosqlite.connect(db_path) as conn:
+        cursor = await conn.execute("DELETE FROM settings WHERE key = ?", (key,))
+        await conn.commit()
+        return cursor.rowcount > 0
 
 
 async def get_summary(

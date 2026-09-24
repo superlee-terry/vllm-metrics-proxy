@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>配置维护 — vLLM Metrics Proxy</title>
+<style>
+:root {
+  --bg-primary: #0d1117; --bg-secondary: #161b22; --bg-tertiary: #21262d;
+  --border: #30363d; --text-primary: #e6edf3; --text-secondary: #8b949e;
+  --text-muted: #6e7681; --accent: #58a6ff; --accent-dim: #1f6feb;
+  --green: #3fb950; --red: #f85149; --yellow: #d29922;
+  --card-radius: 8px;
+  --font-mono: 'SF Mono','Cascadia Code','Fira Code',Consolas,monospace;
+  --font-sans: -apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;
+}
+* { margin:0; padding:0; box-sizing:border-box; }
+body { background:var(--bg-primary); color:var(--text-primary); font-family:var(--font-sans); font-size:14px; line-height:1.5; min-height:100vh; }
+.container { max-width:900px; margin:0 auto; padding:40px 24px; }
+.header { display:flex; align-items:center; justify-content:space-between; margin-bottom:16px; padding-bottom:16px; border-bottom:1px solid var(--border); }
+.header h1 { font-size:20px; font-weight:600; }
+.header a { color:var(--accent); text-decoration:none; font-size:13px; }
+.header a:hover { text-decoration:underline; }
+.banner { background:var(--bg-secondary); border:1px solid var(--border); border-radius:var(--card-radius); padding:12px 16px; margin-bottom:24px; font-size:13px; color:var(--text-secondary); }
+.banner b { color:var(--accent); font-weight:600; }
+.auth-gate { max-width:400px; margin:60px auto; text-align:center; }
+.auth-gate h2 { font-size:18px; margin-bottom:12px; }
+.auth-gate p { color:var(--text-secondary); margin-bottom:20px; font-size:13px; }
+.auth-form { display:flex; gap:10px; justify-content:center; }
+.auth-form input { background:var(--bg-tertiary); border:1px solid var(--border); color:var(--text-primary); padding:10px 16px; border-radius:6px; font-size:14px; outline:none; }
+.btn { background:var(--accent-dim); color:#fff; border:none; padding:10px 18px; border-radius:6px; cursor:pointer; font-size:14px; }
+.btn:hover { background:var(--accent); }
+.btn-sm { background:var(--bg-tertiary); color:var(--text-primary); border:1px solid var(--border); padding:5px 12px; border-radius:5px; cursor:pointer; font-size:12px; }
+.btn-sm:hover { border-color:var(--accent); color:var(--accent); }
+.btn-sm.danger:hover { border-color:var(--red); color:var(--red); }
+.section-title { font-size:15px; font-weight:600; color:var(--accent); margin:20px 0 10px; }
+.card { background:var(--bg-secondary); border:1px solid var(--border); border-radius:var(--card-radius); padding:16px 18px; margin-bottom:12px; }
+.row { display:flex; align-items:center; gap:12px; }
+.row-main { flex:1; }
+.row .lbl { font-size:14px; font-weight:500; }
+.row .desc { font-size:12px; color:var(--text-muted); margin-top:2px; }
+.row .cur { font-family:var(--font-mono); font-size:13px; color:var(--text-secondary); margin-top:4px; }
+.row .cur .k { color:var(--text-muted); }
+.row .cur .v { color:var(--green); }
+.input-wrap { display:flex; align-items:center; gap:8px; }
+input.field { background:var(--bg-tertiary); border:1px solid var(--border); color:var(--text-primary); padding:7px 10px; border-radius:6px; font-size:14px; font-family:var(--font-mono); outline:none; width:90px; }
+input.field:focus { border-color:var(--accent); }
+select.field { background:var(--bg-tertiary); border:1px solid var(--border); color:var(--text-primary); padding:7px 10px; border-radius:6px; font-size:14px; outline:none; }
+.badge { display:inline-block; padding:2px 8px; border-radius:10px; font-size:11px; border:1px solid var(--border); }
+.badge.db { color:var(--yellow); border-color:var(--yellow); }
+.badge.env { color:var(--accent); border-color:var(--accent); }
+.badge.def { color:var(--text-muted); border-color:var(--border); }
+.actions { display:flex; gap:6px; }
+.flash { position:fixed; top:20px; left:50%; transform:translateX(-50%); background:var(--bg-tertiary); border:1px solid var(--green); color:var(--green); padding:10px 20px; border-radius:6px; font-size:13px; opacity:0; transition:opacity .3s; pointer-events:none; z-index:200; }
+.flash.err { border-color:var(--red); color:var(--red); }
+.flash.show { opacity:1; }
+.hidden { display:none !important; }
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="header">
+    <h1>⚙️ 配置维护</h1>
+    <a href="/dashboard">← 返回 Dashboard</a>
+  </div>
+
+  <!-- Auth Gate -->
+  <div class="auth-gate" id="authGate">
+    <h2>请输入管理口令</h2>
+    <p>需要管理员口令才能访问此页面</p>
+    <div class="auth-form">
+      <input type="password" id="adminTokenInput" placeholder="管理口令" autofocus>
+      <button class="btn" onclick="unlock()">验证</button>
+    </div>
+    <p id="authError" class="hidden" style="color:var(--red);margin-top:12px;font-size:13px;"></p>
+  </div>
+
+  <!-- Config Panel -->
+  <div id="configPanel" class="hidden">
+    <div class="banner">
+      修改后 <b>立即生效</b>，无需重启服务；同时持久化到 <code>metrics.db</code>，服务重启后自动恢复。<br>
+      每个配置项旁有「来源」标签：<b>数据库</b>=你手动改过的值，<b>环境变量</b>=由部署 env 设定，<b>默认值</b>=代码内置值。「恢复默认」将该项清除回代码默认值。
+    </div>
+    <div id="configList"><div class="empty-state" style="color:var(--text-muted);padding:20px;">加载中…</div></div>
+  </div>
+</div>
+<div class="flash" id="flash"></div>
+
+<script>
+'use strict';
+var adminToken = '';
+var state = null; // {key: {...}}
+
+function $(id) { return document.getElementById(id); }
+
+function flash(msg, isErr) {
+  var el = $('flash');
+  el.textContent = msg;
+  el.className = 'flash show' + (isErr ? ' err' : '');
+  setTimeout(function(){ el.className = 'flash'; }, 2200);
+}
+
+window.unlock = async function() {
+  var password = $('adminTokenInput').value;
+  if (!password) return;
+  try {
+    var resp = await fetch('/api/auth/verify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password: password }),
+    });
+    var data = await resp.json();
+    if (resp.status === 403) {
+      $('authError').textContent = '密码错误，请重新输入';
+      $('authError').classList.remove('hidden');
+      return;
+    }
+    if (resp.status === 503) {
+      $('authError').textContent = data.detail || '密码未配置，请联系管理员';
+      $('authError').classList.remove('hidden');
+      return;
+    }
+    adminToken = data.token || '';
+    $('authGate').classList.add('hidden');
+    $('configPanel').classList.remove('hidden');
+    loadConfig();
+  } catch(e) {
+    $('authError').textContent = '验证失败';
+  }
+};
+
+$('adminTokenInput').addEventListener('keydown', function(e){ if(e.key==='Enter') unlock(); });
+
+function apiHeaders() {
+  var h = { 'Content-Type': 'application/json' };
+  if (adminToken) h['X-Admin-Token'] = adminToken;
+  return h;
+}
+
+async function apiFetch(url, options) {
+  var resp = await fetch(url, options);
+  if (resp.status === 403) {
+    adminToken = '';
+    $('configPanel').classList.add('hidden');
+    $('authGate').classList.remove('hidden');
+    throw new Error('Admin token invalid');
+  }
+  var data = await resp.json().catch(function(){ return {}; });
+  if (!resp.ok) throw new Error(data.detail || ('HTTP ' + resp.status));
+  return data;
+}
+
+async function loadConfig() {
+  try {
+    var data = await apiFetch('/api/config', { headers: apiHeaders() });
+    state = data.settings;
+    render();
+  } catch(e) {
+    if (e.message !== 'Admin token invalid') $('configList').innerHTML = '<div style="color:var(--red);padding:16px;">加载失败: ' + e.message + '</div>';
+  }
+}
+
+function esc(s) { return String(s).replace(/[&<>"]/g, function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]; }); }
+
+function render() {
+  var groups = [
+    { title: '🔁 循环检测', keys: ['loop_detection_enabled','loop_window_size','loop_repeat_threshold','loop_min_tail_match','loop_punct_spam_min_chars','loop_punct_spam_min_chunks'] },
+    { title: '⏱️ 超时控制', keys: ['request_timeout_seconds','stream_idle_timeout'] },
+  ];
+  var html = '';
+  groups.forEach(function(g) {
+    html += '<div class="section-title">' + esc(g.title) + '</div>';
+    g.keys.forEach(function(key) {
+      var s = state[key];
+      if (!s) return;
+      var sourceClass = s.source === '数据库' ? 'db' : (s.source === '环境变量' ? 'env' : 'def');
+      var isOverridden = s.source === '数据库';
+      var inputHtml;
+      if (s.type === 'bool') {
+        inputHtml = '<select class="field" id="field_'+key+'">' +
+          '<option value="true"' + (s.current ? ' selected' : '') + '>true</option>' +
+          '<option value="false"' + (!s.current ? ' selected' : '') + '>false</option>' +
+          '</select>';
+      } else {
+        var step = s.type === 'float' ? '0.5' : '1';
+        inputHtml = '<input type="number" class="field" id="field_'+key+'" value="' + esc(s.current) + '" step="' + step + '"' +
+          (s.min != null ? ' min="' + s.min + '"' : '') +
+          (s.max != null ? ' max="' + s.max + '"' : '') + '>';
+      }
+      html += '<div class="card"><div class="row">' +
+        '<div class="row-main">' +
+          '<div class="lbl">' + esc(s.label) + ' <span class="badge ' + sourceClass + '">' + esc(s.source) + '</span></div>' +
+          '<div class="desc">' + esc(s.desc) + '</div>' +
+          '<div class="cur"><span class="k">当前</span> <span class="v">' + esc(s.current) + '</span>' +
+            (isOverridden ? '' : ' <span class="k">(默认 ' + esc(s.default) + ')</span>') +
+          '</div>' +
+        '</div>' +
+        '<div class="input-wrap">' + inputHtml +
+          '<div class="actions">' +
+            '<button class="btn-sm" onclick="saveKey(\'' + key + '\')">保存</button>' +
+            '<button class="btn-sm danger" onclick="revertKey(\'' + key + '\')">恢复默认</button>' +
+          '</div>' +
+        '</div>' +
+      '</div></div>';
+    });
+  });
+  $('configList').innerHTML = html;
+}
+
+async function saveKey(key) {
+  var s = state[key];
+  var raw = $('field_' + key).value;
+  var value;
+  if (s.type === 'bool') {
+    value = raw === 'true';
+  } else if (s.type === 'int') {
+    value = parseInt(raw, 10);
+  } else {
+    value = parseFloat(raw);
+  }
+  if (isNaN(value)) { flash('请输入有效数值', true); return; }
+  try {
+    var res = await apiFetch('/api/config', {
+      method: 'PUT', headers: apiHeaders(),
+      body: JSON.stringify({ [key]: value }),
+    });
+    flash('已保存：' + s.label + ' = ' + value + '（立即生效）');
+    await loadConfig();
+  } catch(e) {
+    if (e.message !== 'Admin token invalid') flash('保存失败: ' + e.message, true);
+  }
+}
+
+async function revertKey(key) {
+  var s = state[key];
+  if (!confirm('将「' + s.label + '」恢复为默认值 ' + s.default + ' 并立即生效？')) return;
+  try {
+    await apiFetch('/api/config', {
+      method: 'PUT', headers: apiHeaders(),
+      body: JSON.stringify({ [key]: null }),
+    });
+    flash('已恢复默认：' + s.label + ' = ' + s.default);
+    await loadConfig();
+  } catch(e) {
+    if (e.message !== 'Admin token invalid') flash('恢复失败: ' + e.message, true);
+  }
+}
+</script>
+</body>
+</html>
