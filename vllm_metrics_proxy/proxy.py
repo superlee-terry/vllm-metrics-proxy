@@ -22,7 +22,157 @@ from vllm_metrics_proxy.vllm_metrics import snapshot_counters, measure_counter_d
 logger = logging.getLogger(__name__)
 
 
+# Common sentence punctuation (both Chinese and English) that a model can
+# degenerate into emitting endlessly in a runaway reasoning loop, e.g.
+# '!!!!!' / '......' / '、、、、、' / '？？？'.  When a long unbroken run of
+# these appears at the tail of the output with no letters/digits, it is a real
+# loop and should be terminated.
+#
+# Deliberately EXCLUDES symbols that can legitimately form a "long run":
+#   - dash / hyphen  - – —   (used as markdown/ASCII rules and pauses)
+#   - box-drawing / table borders: ─ │ ┌ ┐ └ ┘ ├ ┤ ┬ ┴ ┼ ═ ║
+#   - markdown / code:  # * $ % & ( ) { } [ ] < > = + / \ ^ ~
+# Only content-less marks that are NEVER a separator belong here.
+_COMMON_PUNCT = frozenset(
+    # ASCII sentence punctuation (exclamation, period, comma, colon, semicolon)
+    "!.,:;"
+    # fullwidth sentence punctuation
+    "！，．？；："
+    # CJK sentence punctuation (incl. enumeration comma 、 and ellipsis …)
+    "、。…"
+)
+
+
 # ---- Loop detection helpers ----
+
+def _is_json_array_null_pattern(chunk: str) -> bool:
+    """Detect if a chunk is likely part of a JSON array/object containing null values.
+
+    These patterns often repeat legitimately during streaming JSON responses,
+    e.g., when vLLM returns structured responses with many null fields.
+    """
+    stripped = chunk.strip()
+    # Common JSON null patterns that can appear repeatedly
+    # Each pattern represents a structural element, not content
+    JSON_NULL_SIGNATURES = [
+        # Simple null
+        "^null$",
+        ",null$",
+        "^null,",
+        "null,",
+        ",null,",
+        # Array/object brackets with null
+        "\\[null",
+        "null\\]",
+        "\\{null",
+        "null\\}",
+        # Mixed null with whitespace/newlines
+        "\\s+null\\s+",
+        "null\\s*,",
+        ",\\s*null",
+    ]
+
+    import re
+    for sig in JSON_NULL_SIGNATURES:
+        if re.search(sig, stripped):
+            return True
+    return False
+
+
+def _is_structural_sequence(window: list[str]) -> bool:
+    """Detect if the window represents a structural JSON construction sequence.
+
+    This catches cases where the model is building a JSON object/array and
+    null values are being added incrementally. Not a true loop.
+    """
+    # Check if window has characteristics of JSON structure building:
+    # 1. Many chunks contain "null"
+    # 2. Chunks seem to be forming arrays/objects
+    # 3. Repetition is due to structural expansion, not content looping
+
+    null_count = sum(1 for c in window if "null" in c)
+    if null_count < len(window) * 0.3:
+        return False
+
+    # Look for array/object markers
+    has_brackets = any("[" in c or "{" in c for c in window)
+    has_closure = any("]" in c or "}" in c for c in window)
+
+    if not (has_brackets and has_closure):
+        return False
+
+    # Check if the most frequent chunks are null-related
+    from collections import Counter
+    counts = Counter(window)
+    top_5 = counts.most_common(5)
+    null_related = sum(1 for chunk, _ in top_5 if "null" in chunk)
+
+    return null_related >= 3
+
+
+def _are_repetitions_dense(positions: list[int], window_len: int, density_threshold: float = 0.15) -> bool:
+    """Check if repeated positions are densely packed, indicating a real loop.
+
+    A real loop tends to have repetitions close together in the window.
+    Sparse repetitions (spread out) are likely not a loop.
+
+    Args:
+        positions: List of indices where the repeated chunk occurs.
+        window_len: Total length of the window.
+        density_threshold: Maximum ratio of average gap to window length.
+                          Lower values require tighter clustering. Default 0.15 (15%).
+
+    Returns:
+        True if repetitions are considered dense (potential loop), False if sparse.
+    """
+    if len(positions) < 2:
+        return True
+
+    # Calculate gaps between consecutive positions
+    gaps = [positions[i] - positions[i-1] for i in range(1, len(positions))]
+    avg_gap = sum(gaps) / len(gaps)
+
+    # If average gap is small relative to window size, consider dense
+    return avg_gap / window_len < density_threshold
+
+
+def _punctuation_spam(
+    window: list[str], min_chars: int, min_chunks: int
+) -> tuple[bool, str]:
+    """Detect a degenerate pure-punctuation run at the tail of the window.
+
+    Scans backward from the newest chunk, accumulating both the total stripped
+    length and the chunk count of consecutive chunks made up entirely of common
+    sentence punctuation (see _COMMON_PUNCT: CN ！，。？；：… and EN ! . , : ;).
+    The run stops at the first chunk carrying any real content (a letter, digit,
+    or a symbol outside the set such as a dash, box-drawing border or markdown).
+
+    Triggers (terminates the stream) when EITHER:
+      * total punctuation length >= ``min_chars`` (default 10) — catches a
+        repeated multi-char unit ('!!!!!' x2+, '......' x2+, mixed CN/EN);
+      * consecutive pure-punctuation chunks >= ``min_chunks`` (default 6) —
+        catches one-token-per-chunk loops where vLLM sends a single mark per
+        SSE line ('、' x6, '！' x6) and the total char count alone stays small.
+
+    A single ellipsis / emphasis chunk ('......', '!!!!') and any run that
+    alternates with real content stays under both thresholds and is left alone.
+    """
+    acc = 0
+    chunks = 0
+    for c in reversed(window):
+        s = c.strip()
+        if not s:
+            break  # whitespace / empty chunk ends the run
+        if not all(ch in _COMMON_PUNCT for ch in s):
+            break  # real content (letter/digit/border) ends the run
+        acc += len(s)
+        chunks += 1
+    if acc >= min_chars:
+        return True, f"punct_spam: trailing {acc}-char pure-punctuation run"
+    if chunks >= min_chunks:
+        return True, f"punct_spam: {chunks} consecutive pure-punctuation chunks"
+    return False, ""
+
 
 def _detect_loop(window: list[str], repeat_threshold: int, min_tail_match: int) -> tuple[bool, str]:
     """Detect output loops in a sliding window of chunk contents.
@@ -34,15 +184,35 @@ def _detect_loop(window: list[str], repeat_threshold: int, min_tail_match: int) 
     2. Chunk-repeat: an entire chunk (>=20 chars) appears >= threshold times
        in the last 10 chunks. Only full-chunk matches count — partial substrings
        are ignored to prevent false positives on common words/punctuation.
+
+    Enhanced with JSON structure detection and density analysis to avoid false positives.
     """
     if len(window) < min_tail_match:
+        return False, ""
+
+    # Strategy 0: Detect JSON null array/object construction patterns
+    # These are common in vLLM responses and should not be treated as loops
+    if _is_structural_sequence(window):
         return False, ""
 
     # Strategy 1: last N chunks identical
     # Exclude pure-whitespace chunks and short tokens (punctuation, JSON syntax)
     # to prevent false positives on repeated single quotes, commas, etc.
+    # Also exclude single-character-repeat chunks (e.g. ─────, -------, ========)
+    # which are ASCII art / box-drawing decorations, not content loops.
+    # Also exclude JSON null serialization artifacts (e.g. ",null", "null")
+    # which appear when vLLM returns empty responses with null content.
+    NULL_JSON_PATTERNS = (",null", "null", ",null,", "null,", ",null,,", "null,,")
+    # Check if any chunk in the window is a JSON null artifact — if so, skip tail_match
+    # to avoid false positives on vLLM response structures like {"choices": [{"delta": {"content": ""}}]}
+    if any(c.strip() in NULL_JSON_PATTERNS for c in window):
+        return False, ""
     tail = window[-min_tail_match:]
-    if all(t == tail[0] for t in tail) and tail[0].strip() and len(tail[0].strip()) >= 5:
+    if (all(t == tail[0] for t in tail)
+            and tail[0].strip()
+            and len(tail[0].strip()) >= 5
+            and len(set(tail[0].strip())) >= 2
+            and tail[0].strip() not in NULL_JSON_PATTERNS):
         return True, f"tail_match: last {min_tail_match} chunks identical='{tail[0][:200]}'"
 
     # Strategy 2: chunk-level repetition
@@ -56,14 +226,46 @@ def _detect_loop(window: list[str], repeat_threshold: int, min_tail_match: int) 
     # Filter to substantial chunks only
     # Exclude chunks that are purely whitespace (e.g. indentation spaces/tabs)
     # to avoid false positives on code-formatted output.
-    substantial = [c for c in tail_slice if len(c) >= MIN_CHUNK_LEN and c.strip()]
+    # Also exclude single-character-repeat chunks (ASCII art separators/borders).
+    # CRITICAL FIX: Exclude JSON null structural fragments to prevent false positives
+    substantial = [c for c in tail_slice
+                    if len(c) >= MIN_CHUNK_LEN
+                    and c.strip()
+                    and len(set(c.strip())) >= 2
+                    and not _is_json_array_null_pattern(c)]
     if len(substantial) < repeat_threshold:
         return False, ""
 
     counts = Counter(substantial)
     most_common_chunk, most_common_count = counts.most_common(1)[0]
     if most_common_count >= repeat_threshold:
-        return True, f"chunk_repeat: chunk({most_common_count}x, len={len(most_common_chunk)})='{most_common_chunk[:200]}'"
+        # Check predecessor diversity to distinguish enumeration from loops.
+        # In enumeration (e.g. "User Management", "Category Management", "Product
+        # Management"), the repeated suffix " Management" has different preceding
+        # chunks each time.  In a real loop, either the chunk repeats consecutively
+        # (predecessor IS the chunk itself) or the entire token sequence repeats.
+        positions = [i for i, c in enumerate(window) if c == most_common_chunk]
+
+        # Additional check: Are repetitions densely packed?
+        # If not all repetitions are consecutive, check density
+        if len(positions) > 1 and not (positions[-1] - positions[0] < len(positions)):
+            if not _are_repetitions_dense(positions, len(window)):
+                return False, ""
+
+        predecessors = [window[i - 1] for i in positions if i > 0]
+        if most_common_chunk in predecessors:
+            # Chunk appears consecutively → real loop
+            return True, f"chunk_repeat: chunk({most_common_count}x, len={len(most_common_chunk)})='{most_common_chunk[:200]}'"
+        if predecessors and len(set(predecessors)) >= 2:
+            # Non-consecutive, diverse predecessors → enumeration, not a loop
+            pass
+        else:
+            # Same predecessors but not consecutive - could be sparse repetition or pattern
+            # Need density check to distinguish between harmless repetition and real loop
+            if len(positions) > 1 and not (positions[-1] - positions[0] < len(positions)):
+                if not _are_repetitions_dense(positions, len(window)):
+                    return False, ""
+            return True, f"chunk_repeat: chunk({most_common_count}x, len={len(most_common_chunk)})='{most_common_chunk[:200]}'"
 
     return False, ""
 
@@ -775,6 +977,7 @@ def _handle_streaming(
         was_cancelled = False
         loop_triggered = False
         wall_clock_timed_out = False
+        last_reasoning_only = False
         # Loop detection sliding window
         loop_window: list[str] = []
 
@@ -810,9 +1013,21 @@ def _handle_streaming(
                                 "STREAM TIMEOUT [%s] model=%s elapsed=%.1fs wall_clock_limit=%.1fs — force terminated",
                                 request_id[:8], model, time.monotonic() - start_time, wall_clock_timeout,
                             )
-                            queue.put_nowait(
-                                json.dumps({"error": {"message": f"stream exceeded wall-clock timeout of {wall_clock_timeout}s", "type": "server_error", "code": 504}})
-                            )
+                            # 只要推理过程中产生过 reasoning tokens，就用温和提示
+                            # 让 agent 能接着前文继续，而不是硬中断
+                            if reasoning_tokens > 0:
+                                queue.put_nowait(
+                                    json.dumps({
+                                        "choices": [{
+                                            "delta": {"content": f"\n\n|| 思考超过{wall_clock_timeout}s，当前处理中断。稍后请继续。"},
+                                            "finish_reason": "length"
+                                        }]
+                                    })
+                                )
+                            else:
+                                queue.put_nowait(
+                                    json.dumps({"error": {"message": f"|| 请求超时（已达 {wall_clock_timeout}s），已终止。", "type": "server_error", "code": 504}})
+                                )
                             queue.put_nowait("[DONE]")
                             break
 
@@ -851,6 +1066,11 @@ def _handle_streaming(
                             delta = choice.get("delta") or {}
                             if delta.get("reasoning"):
                                 reasoning_tokens += 1
+                            # Track whether the last chunk was reasoning-only
+                            # (has reasoning but no content)
+                            has_content = bool(delta.get("content"))
+                            has_reasoning = bool(delta.get("reasoning"))
+                            last_reasoning_only = has_reasoning and not has_content
 
                         # --- Loop detection (always runs; config switch only controls stream termination) ---
                         if not loop_triggered:
@@ -868,6 +1088,16 @@ def _handle_streaming(
                                 settings.loop_repeat_threshold,
                                 settings.loop_min_tail_match,
                             )
+                            # Secondary check: degenerate pure-punctuation run
+                            # (e.g. endless '!!!!!' / '......' / '、、' with no
+                            # letters/digits). Complements _detect_loop which
+                            # filters out single-distinct-char repeats.
+                            if not loop_result:
+                                loop_result, loop_reason = _punctuation_spam(
+                                    loop_window,
+                                    settings.loop_punct_spam_min_chars,
+                                    settings.loop_punct_spam_min_chunks,
+                                )
                             if loop_result:
                                 loop_triggered = True
                                 # Write to dedicated loop debug log file
@@ -970,7 +1200,10 @@ def _handle_streaming(
                     record["error_message"] = "cancelled by operator"
                 elif wall_clock_timed_out:
                     record["status"] = "timeout"
-                    record["error_message"] = f"stream exceeded wall-clock timeout of {wall_clock_timeout}s"
+                    if reasoning_tokens > 0:
+                        record["error_message"] = f"stream exceeded wall-clock timeout of {wall_clock_timeout}s (reasoning interrupted)"
+                    else:
+                        record["error_message"] = f"stream exceeded wall-clock timeout of {wall_clock_timeout}s"
                 elif loop_triggered:
                     record["status"] = "loop_detected"
                     record["error_message"] = "model output loop detected, stream terminated"

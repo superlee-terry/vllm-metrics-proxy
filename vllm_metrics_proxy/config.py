@@ -15,9 +15,14 @@ class Settings(BaseSettings):
     loop_window_size: int = 20            # sliding window of recent non-empty chunk contents
     loop_repeat_threshold: int = 3        # pattern repeated N times triggers cutoff
     loop_min_tail_match: int = 5          # last N chunks identical triggers cutoff
+    # Punctuation-spam cutoff (trailing run of pure punctuation, no content):
+    #   min_chars  – total punctuation length, or
+    #   min_chunks – consecutive pure-punctuation chunks (one-token-per-chunk loops)
+    loop_punct_spam_min_chars: int = 10   # e.g. '!!!!!'x2 / '......'x2 / mixed CN+EN
+    loop_punct_spam_min_chunks: int = 6   # e.g. '、'x6 / '！'x6 (one mark per chunk)
 
     # Timeout config
-    request_timeout_seconds: float = 360.0  # wall-clock total duration cap for ALL requests
+    request_timeout_seconds: float = 600.0  # wall-clock total duration cap for ALL requests
                                           # (streaming: total output time; non-streaming: total request time)
     stream_idle_timeout: float = 30.0      # max seconds between two consecutive chunks (stall detection)
 

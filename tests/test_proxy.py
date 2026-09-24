@@ -5,7 +5,7 @@ import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 from httpx import ASGITransport, AsyncClient
 from vllm_metrics_proxy.main import create_app
-from vllm_metrics_proxy.db import init_db
+from vllm_metrics_proxy.db import init_db, get_requests
 from vllm_metrics_proxy.proxy import _detect_loop
 from vllm_metrics_proxy.config import Settings
 
@@ -22,7 +22,7 @@ class TestDetectLoop:
 
     def test_tail_match_identical_chunks(self):
         """Last 5 chunks identical → loop detected."""
-        window = ["/////", "/////", "/////", "/////", "/////"]
+        window = ["hello world", "hello world", "hello world", "hello world", "hello world"]
         assert self._is_loop(window) is True
 
     def test_tail_match_not_enough_chunks(self):
@@ -43,10 +43,10 @@ class TestDetectLoop:
         ]
         assert self._is_loop(window) is True
 
-    def test_single_char_tail_match(self):
-        """Single char repeated many times → detected by tail-match."""
+    def test_single_char_tail_match_no_loop(self):
+        """Single char repeated many times → NOT a loop (it's decoration, not content)."""
         window = ["/", "/", "/", "/", "/", "/", "/", "/", "/", "/"]
-        assert self._is_loop(window) is True
+        assert self._is_loop(window) is False
 
     def test_normal_text_no_loop(self):
         """Normal varied text should not trigger loop detection."""
@@ -117,12 +117,56 @@ class TestDetectLoop:
         ]
         assert self._is_loop(window) is False
 
+    def test_box_drawing_chars_no_loop(self):
+        """Box-drawing chars (─────) are ASCII art, not a loop. Reproduces 2026-07-06 false positive."""
+        # The model was drawing architecture diagrams with Unicode box-drawing characters.
+        # Tokenizer emits repeated '────────' chunks which are single-char decorations.
+        window = [
+            "分析", "\n\n", "###", " ", "整体", "架构", "：", "三层", "分离",
+            "\n\n", "```", "\n", "┌", "─" * 8, "─" * 8, "─" * 8, "─" * 8, "─" * 8,
+        ]
+        assert self._is_loop(window) is False
+
+    def test_single_char_repeat_tail_no_loop(self):
+        """Tail of identical single-char-repeat chunks (e.g. ======) → not a loop."""
+        window = ["text", "=" * 4, "=" * 4, "=" * 4, "=" * 4, "=" * 4]
+        assert self._is_loop(window) is False
+
+    def test_null_json_pattern_no_loop(self):
+        """JSON null serialization artifacts should not trigger loop detection."""
+        # Reproduces the case where vLLM returns empty responses with null content
+        # NULL_JSON_PATTERNS = (",null", "null", ",null,", "null,", ",null,,", "null,,")
+        window = [
+            '{"choices":[{"delta":{"role":"assistant"}}],"usage":null}',
+            '{"choices":[{"delta":{"content":""}}],"usage":null}',
+            "null", "null", "null", "null", "null",
+        ]
+        assert self._is_loop(window) is False
+
+    def test_null_json_with_comma_no_loop(self):
+        """JSON null with commas (e.g. ',null', 'null,') should not trigger loop."""
+        window = [
+            "some content",
+            ",null", ",null", ",null", ",null", ",null",
+        ]
+        assert self._is_loop(window) is False
+
+    def test_null_json_trailing_commas_no_loop(self):
+        """JSON null with trailing commas (e.g. 'null,', 'null,,') should not trigger loop."""
+        window = [
+            "some content",
+            "null,", "null,", "null,", "null,", "null,",
+        ]
+        assert self._is_loop(window) is False
+
 
 @pytest_asyncio.fixture
 async def app(tmp_path):
     db_path = str(tmp_path / "test.db")
     await init_db(db_path)
-    return create_app(db_path=db_path)
+    # Disable auth for tests to avoid 401 errors
+    test_settings = Settings(auth_enabled=False)
+    return create_app(settings_override=test_settings, db_path=db_path)
 
 
 @pytest.mark.asyncio
@@ -272,3 +316,151 @@ async def test_streaming_proxy_records_metrics(app, tmp_path):
     assert rows[0]["stream"] == 1
     assert rows[0]["ttft_ms"] is not None
     assert rows[0]["completion_tokens"] == 2
+
+@pytest.mark.asyncio
+async def test_streaming_timeout_reasoning_only(tmp_path):
+    """When model is in reasoning-only mode and hits timeout, send thinking-continued hint."""
+    import asyncio
+
+    db_path = str(tmp_path / "test.db")
+    await init_db(db_path)
+    test_settings = Settings(auth_enabled=False, request_timeout_seconds=0.5)
+    test_app = create_app(settings_override=test_settings, db_path=db_path)
+
+    # Mock chunks: reasoning-only chunks
+    chunks = [
+        '{"choices":[{"delta":{"role":"assistant"}}],"usage":null}',
+        '{"choices":[{"delta":{"content":"","reasoning":"Let me think"}}],"usage":null}',
+        '{"choices":[{"delta":{"content":"","reasoning":"about this"}}],"usage":null}',
+        '{"choices":[{"delta":{"content":"","reasoning":"the problem"}}],"usage":null}',
+    ]
+
+    # Use a counter to simulate time passing on each monotonic() call
+    fake_time = 0.0
+    call_count = 0
+
+    def fake_monotonic():
+        nonlocal fake_time, call_count
+        call_count += 1
+        # First call is start_time, then each subsequent call adds 0.3s
+        if call_count == 1:
+            fake_time = 0.0
+        else:
+            fake_time += 0.3
+        return fake_time
+
+    with patch("vllm_metrics_proxy.proxy.httpx.AsyncClient") as MockClient:
+        mock_instance = AsyncMock()
+
+        async def fake_aiter_lines():
+            for c in chunks:
+                yield f"data: {c}"
+            # Don't yield [DONE] - let timeout trigger instead
+            await asyncio.sleep(10)
+
+        mock_resp = AsyncMock()
+        mock_resp.status_code = 200
+        mock_resp.headers = {"content-type": "text/event-stream"}
+        mock_resp.aiter_lines = fake_aiter_lines
+        mock_resp.aread = AsyncMock(return_value=b"")
+
+        mock_stream_ctx = AsyncMock()
+        mock_stream_ctx.__aenter__.return_value = mock_resp
+        mock_stream_ctx.__aexit__.return_value = False
+        mock_instance.stream = MagicMock(return_value=mock_stream_ctx)
+        mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
+        mock_instance.__aexit__ = AsyncMock(return_value=False)
+        MockClient.return_value = mock_instance
+
+        with patch("vllm_metrics_proxy.proxy.time.monotonic", side_effect=fake_monotonic):
+            transport = ASGITransport(app=test_app)
+            async with AsyncClient(transport=transport, base_url="http://test") as client:
+                resp = await client.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "qwen3.6-27b",
+                        "messages": [{"role": "user", "content": "Hi"}],
+                        "stream": True,
+                    },
+                )
+
+    assert resp.status_code == 200
+    await asyncio.sleep(1)
+
+    rows = await get_requests(db_path)
+    assert len(rows) == 1
+    assert rows[0]["status"] == "timeout"
+    assert "||" in rows[0]["error_message"]
+    assert "思考过程被中断" in rows[0]["error_message"]
+
+
+@pytest.mark.asyncio
+async def test_streaming_timeout_with_content(tmp_path):
+    """When model has content (not just reasoning) and hits timeout, send generic timeout message."""
+    import asyncio
+
+    db_path = str(tmp_path / "test.db")
+    await init_db(db_path)
+    test_settings = Settings(auth_enabled=False, request_timeout_seconds=0.5)
+    test_app = create_app(settings_override=test_settings, db_path=db_path)
+
+    chunks = [
+        '{"choices":[{"delta":{"role":"assistant"}}],"usage":null}',
+        '{"choices":[{"delta":{"content":"Hello"}}],"usage":null}',
+        '{"choices":[{"delta":{"content":" World"}}],"usage":null}',
+    ]
+
+    fake_time = 0.0
+    call_count = 0
+
+    def fake_monotonic():
+        nonlocal fake_time, call_count
+        call_count += 1
+        if call_count == 1:
+            fake_time = 0.0
+        else:
+            fake_time += 0.3
+        return fake_time
+
+    with patch("vllm_metrics_proxy.proxy.httpx.AsyncClient") as MockClient:
+        mock_instance = AsyncMock()
+
+        async def fake_aiter_lines():
+            for c in chunks:
+                yield f"data: {c}"
+            await asyncio.sleep(10)
+
+        mock_resp = AsyncMock()
+        mock_resp.status_code = 200
+        mock_resp.headers = {"content-type": "text/event-stream"}
+        mock_resp.aiter_lines = fake_aiter_lines
+        mock_resp.aread = AsyncMock(return_value=b"")
+
+        mock_stream_ctx = AsyncMock()
+        mock_stream_ctx.__aenter__.return_value = mock_resp
+        mock_stream_ctx.__aexit__.return_value = False
+        mock_instance.stream = MagicMock(return_value=mock_stream_ctx)
+        mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
+        mock_instance.__aexit__ = AsyncMock(return_value=False)
+        MockClient.return_value = mock_instance
+
+        with patch("vllm_metrics_proxy.proxy.time.monotonic", side_effect=fake_monotonic):
+            transport = ASGITransport(app=test_app)
+            async with AsyncClient(transport=transport, base_url="http://test") as client:
+                resp = await client.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "qwen3.6-27b",
+                        "messages": [{"role": "user", "content": "Hi"}],
+                        "stream": True,
+                    },
+                )
+
+    assert resp.status_code == 200
+    await asyncio.sleep(1)
+
+    rows = await get_requests(db_path)
+    assert len(rows) == 1
+    assert rows[0]["status"] == "timeout"
+    assert "||" in rows[0]["error_message"]
+    assert "请求超时" in rows[0]["error_message"]
